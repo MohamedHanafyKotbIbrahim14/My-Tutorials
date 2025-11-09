@@ -254,20 +254,32 @@ def parse_max_classes(value) -> Tuple[int, str]:
     
     value_str = str(value).strip()
     
+    # Handle datetime objects (dates entered by mistake)
+    if isinstance(value, pd.Timestamp) or 'Timestamp' in str(type(value)):
+        return 3, f"Date value '{value}' (defaulted to 3)"
+    
+    # Check if it looks like a date string (YYYY-MM-DD or similar with year > 1000)
+    if re.search(r'\b(19|20)\d{2}[-/]\d{1,2}[-/]\d{1,2}\b', value_str):
+        return 3, f"Date value '{value_str}' (defaulted to 3)"
+    
     # Try direct integer conversion
     try:
-        return int(float(value_str)), "OK"
+        num = int(float(value_str))
+        if num > 100:  # Likely a year or invalid number
+            return 3, f"Invalid large number '{value_str}' (defaulted to 3)"
+        return num, "OK"
     except:
         pass
     
-    # Handle ranges like "2-3"
-    if '-' in value_str:
+    # Handle ranges like "2-3" (but not dates)
+    if '-' in value_str and not re.search(r'\d{4}', value_str):
         try:
             parts = value_str.split('-')
             low = int(parts[0].strip())
             high = int(parts[1].strip())
-            avg = (low + high) // 2
-            return avg, f"Range {value_str} (using average: {avg})"
+            if low <= 10 and high <= 10:  # Reasonable range for classes
+                avg = (low + high) // 2
+                return avg, f"Range {value_str} (using average: {avg})"
         except:
             pass
     
@@ -275,15 +287,17 @@ def parse_max_classes(value) -> Tuple[int, str]:
     if '+' in value_str:
         try:
             num = int(value_str.replace('+', '').strip())
-            return num, f"'{value_str}' (using {num})"
+            if num <= 10:
+                return num, f"'{value_str}' (using {num})"
         except:
             pass
     
-    # Extract any number from the string
-    numbers = re.findall(r'\d+', value_str)
-    if numbers:
-        num = int(numbers[0])
-        return num, f"Extracted {num} from '{value_str}'"
+    # Extract first reasonable number from the string (< 100)
+    numbers = re.findall(r'\b\d+\b', value_str)
+    for num_str in numbers:
+        num = int(num_str)
+        if num <= 10:  # Reasonable class count
+            return num, f"Extracted {num} from '{value_str}'"
     
     # Default fallback
     return 3, f"Could not parse '{value_str}' (defaulted to 3)"
@@ -337,7 +351,7 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
     last_name_col = df.columns[8]
     pref_name_col = df.columns[10]
     t3_pref_col = df.columns[108]  # DE - T3 preferences
-    max_classes_col = df.columns[109]  # DG - Max classes
+    max_classes_col = df.columns[110]  # DG - Max classes (tutorials per session)
     
     tutors_data = []
     preferences = {}
