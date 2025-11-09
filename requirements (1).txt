@@ -1,0 +1,12 @@
+streamlit
+plotly
+pandas
+pulp
+numpy
+xlsxwriter
+openpyxl
+scipy
+scikit-learn
+networkx
+
+
