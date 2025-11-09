@@ -237,8 +237,9 @@ def extract_course_codes(text: str) -> List[str]:
         return []
     
     # Pattern to match course codes like ACTL2102, RISK5001, COMM2501/5501
-    pattern = r'(ACTL|RISK|COMM)\d{4}(?:/\d{4})?'
-    codes = re.findall(pattern, str(text))
+    pattern = r'\b(ACTL|RISK|COMM)\d{4}(?:/\d{4})?\b'
+    # Use finditer to get full matches, not just the captured group
+    codes = [match.group() for match in re.finditer(pattern, str(text))]
     
     return list(set(codes))
 
@@ -358,10 +359,27 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
         
         # Get T3 preferences
         t3_pref_text = row[t3_pref_col]
-        t3_courses = extract_course_codes(t3_pref_text)
+        t3_courses_raw = extract_course_codes(t3_pref_text)
+        
+        # Expand dual codes (e.g., "ACTL3162/5106" -> ["ACTL3162", "ACTL5106"])
+        t3_courses_expanded = []
+        for code in t3_courses_raw:
+            if '/' in code:
+                # Split dual code: "ACTL3162/5106" -> ["ACTL3162", "ACTL5106"]
+                parts = code.split('/')
+                base = parts[0]  # e.g., "ACTL3162"
+                prefix = base[:4]  # e.g., "ACTL"
+                second_code = prefix + parts[1]  # e.g., "ACTL5106"
+                t3_courses_expanded.append(base)
+                t3_courses_expanded.append(second_code)
+            else:
+                t3_courses_expanded.append(code)
+        
+        # Remove duplicates
+        t3_courses_expanded = list(set(t3_courses_expanded))
         
         # Only include tutors who have T3 preferences
-        if len(t3_courses) > 0:
+        if len(t3_courses_expanded) > 0:
             # Parse max classes
             max_val, status = parse_max_classes(row[max_classes_col])
             
@@ -371,12 +389,12 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
                 'last_name': str(row[last_name_col]) if pd.notna(row[last_name_col]) else '',
                 'email': str(row[df.columns[9]]) if pd.notna(row[df.columns[9]]) else '',
                 't3_preferences_raw': str(t3_pref_text),
-                't3_courses': ', '.join(t3_courses),
+                't3_courses': ', '.join(sorted(t3_courses_expanded)),
                 'max_classes': max_val,
                 'max_classes_status': status
             })
             
-            preferences[tutor_name] = t3_courses
+            preferences[tutor_name] = t3_courses_expanded
             max_classes[tutor_name] = max_val
             parsing_status[tutor_name] = status
     
