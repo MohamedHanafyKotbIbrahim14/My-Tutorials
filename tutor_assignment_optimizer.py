@@ -13,8 +13,7 @@ class TutorAssignmentLP:
     
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
-                 tutor_max_classes: Dict[str, int],
-                 max_courses_per_tutor: int = 2):
+                 tutor_max_classes: Dict[str, int]):
         """
         Initialize the LP problem.
         
@@ -23,20 +22,17 @@ class TutorAssignmentLP:
             tutors_df: DataFrame with tutor information
             preferences: Dict mapping (tutor, course) -> preference_score
             tutor_max_classes: Dict mapping tutor -> max_classes
-            max_courses_per_tutor: Maximum number of different courses per tutor (default: 2)
         """
         self.classes_df = classes_df
         self.tutors_df = tutors_df
         self.preferences = preferences
         self.tutor_max_classes = tutor_max_classes
-        self.max_courses_per_tutor = max_courses_per_tutor
         
         self.tutors = list(tutors_df['tutor_name'].unique())
         self.courses = list(classes_df['course'].unique())
         
         self.model = None
-        self.x_vars = {}  # Assignment variables
-        self.y_vars = {}  # Course indicator variables
+        self.x_vars = {}
         self.time_conflicts = self._detect_time_conflicts()
         
     def _detect_time_conflicts(self) -> Dict[Tuple[str, str], bool]:
@@ -122,17 +118,6 @@ class TutorAssignmentLP:
                         cat='Binary'
                     )
         
-        # NEW: Course indicator variables: y[(tutor, course)] = 1 if tutor teaches any class from that course
-        self.y_vars = {}
-        for tutor in self.tutors:
-            for course in self.courses:
-                # Only create indicator if tutor can teach this course
-                if self.preferences.get((tutor, course), 0) > 0:
-                    self.y_vars[(tutor, course)] = pulp.LpVariable(
-                        f"y_{tutor}_{course}",
-                        cat='Binary'
-                    )
-        
         # Objective: Maximize total preference satisfaction
         objective = pulp.lpSum([
             self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
@@ -161,7 +146,7 @@ class TutorAssignmentLP:
                 f"Class_Coverage_{course}_{class_id}"
             )
         
-        # Constraint 2: Tutor workload limit (total classes)
+        # Constraint 2: Tutor workload limit
         for tutor in self.tutors:
             total_classes = pulp.lpSum([
                 self.x_vars[(tutor, course, class_id)]
@@ -176,6 +161,7 @@ class TutorAssignmentLP:
             )
         
         # Constraint 3: Time conflict prevention
+        # If tutor is assigned to two classes that conflict, sum must be ≤ 1
         for tutor in self.tutors:
             # Get all classes this tutor could be assigned to
             tutor_possible_classes = [
@@ -194,49 +180,6 @@ class TutorAssignmentLP:
                             self.x_vars[(tutor, course2, class2)] <= 1,
                             f"Time_Conflict_{tutor}_{class1}_{class2}"
                         )
-        
-        # NEW Constraint 4: Link indicator variables to assignment variables
-        # If tutor teaches any class from a course, the indicator must be 1
-        for tutor in self.tutors:
-            for course in self.courses:
-                if (tutor, course) in self.y_vars:
-                    # Get all classes this tutor could teach in this course
-                    course_classes = [
-                        self.x_vars[(tutor, course, class_id)]
-                        for (t, c, class_id) in self.x_vars.keys()
-                        if t == tutor and c == course
-                    ]
-                    
-                    if course_classes:
-                        # If any x variable is 1, then y must be 1
-                        # This is enforced by: sum(x) <= M * y, where M is the max number of classes
-                        M = len(course_classes)  # Upper bound on how many classes from this course
-                        self.model += (
-                            pulp.lpSum(course_classes) <= M * self.y_vars[(tutor, course)],
-                            f"Indicator_Link_{tutor}_{course}"
-                        )
-                        
-                        # Also need: if any x is 1, y must be 1 (this ensures y=1 when needed)
-                        # We do this by: y >= x for each x
-                        for idx, x_var in enumerate(course_classes):
-                            self.model += (
-                                self.y_vars[(tutor, course)] >= x_var,
-                                f"Indicator_Force_{tutor}_{course}_{idx}"
-                            )
-        
-        # NEW Constraint 5: Maximum courses per tutor
-        for tutor in self.tutors:
-            # Sum of all course indicators for this tutor
-            total_courses = pulp.lpSum([
-                self.y_vars[(tutor, course)]
-                for course in self.courses
-                if (tutor, course) in self.y_vars
-            ])
-            
-            self.model += (
-                total_courses <= self.max_courses_per_tutor,
-                f"Max_Courses_{tutor}"
-            )
     
     def solve(self):
         """Solve the optimization problem."""
@@ -256,7 +199,6 @@ class TutorAssignmentLP:
                 'objective_value': None,
                 'assignments': {},
                 'tutor_loads': {},
-                'tutor_courses': {},
                 'unassigned_classes': []
             }
     
@@ -264,7 +206,6 @@ class TutorAssignmentLP:
         """Extract solution from solved model."""
         assignments = {}  # (course, class_id) -> tutor
         tutor_loads = {tutor: {'classes': [], 'total': 0} for tutor in self.tutors}
-        tutor_courses = {tutor: set() for tutor in self.tutors}  # Track courses per tutor
         unassigned_classes = []
         
         # Extract assignments
@@ -273,7 +214,6 @@ class TutorAssignmentLP:
                 assignments[(course, class_id)] = tutor
                 tutor_loads[tutor]['classes'].append((course, class_id))
                 tutor_loads[tutor]['total'] += 1
-                tutor_courses[tutor].add(course)
         
         # Find unassigned classes
         for idx, row in self.classes_df.iterrows():
@@ -287,7 +227,6 @@ class TutorAssignmentLP:
             'objective_value': pulp.value(self.model.objective),
             'assignments': assignments,
             'tutor_loads': tutor_loads,
-            'tutor_courses': tutor_courses,
             'unassigned_classes': unassigned_classes
         }
 
@@ -486,14 +425,12 @@ def main():
     )
     
     st.title("👨‍🏫 Tutor-Class Assignment Optimizer (T3)")
-    st.markdown("**Linear Programming Solution with Time Conflict Detection & Course Diversity**")
+    st.markdown("**Linear Programming Solution with Time Conflict Detection**")
     st.markdown("---")
     
     # Initialize session state
     if 'step' not in st.session_state:
         st.session_state.step = 1
-    if 'max_courses_per_tutor' not in st.session_state:
-        st.session_state.max_courses_per_tutor = 2
     
     # Step 1: File Upload
     if st.session_state.step == 1:
@@ -548,18 +485,6 @@ def show_upload_step():
             key='file2'
         )
     
-    # NEW: Add parameter for max courses per tutor
-    st.markdown("---")
-    st.subheader("⚙️ Optimization Settings")
-    max_courses = st.number_input(
-        "Maximum Different Courses per Tutor",
-        min_value=1,
-        max_value=10,
-        value=2,
-        help="Limits course diversity per tutor (e.g., 2 = each tutor teaches at most 2 different courses)"
-    )
-    st.session_state.max_courses_per_tutor = max_courses
-    
     if file1 is not None and file2 is not None:
         with st.spinner("Processing files..."):
             try:
@@ -568,10 +493,10 @@ def show_upload_step():
                 st.session_state.classes_df = classes_df
                 
                 # Load tutors
-                tutors_df, preferences, max_classes_dict, parsing_status = load_file2_tutors(file2)
+                tutors_df, preferences, max_classes, parsing_status = load_file2_tutors(file2)
                 st.session_state.tutors_df = tutors_df
                 st.session_state.preferences = preferences
-                st.session_state.max_classes = max_classes_dict
+                st.session_state.max_classes = max_classes
                 st.session_state.parsing_status = parsing_status
                 
                 # Show preview
@@ -658,7 +583,7 @@ def show_review_step():
             new_value = st.number_input(
                 "Max",
                 min_value=1,
-                max_value=50,
+                max_value=50,  # Increased to handle edge cases
                 value=int(row['max_classes']),
                 key=f"max_{idx}",
                 label_visibility="collapsed"
@@ -692,7 +617,6 @@ def show_analysis_step():
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
-    max_courses_per_tutor = st.session_state.max_courses_per_tutor
     
     # Summary metrics
     st.subheader("📊 Overview")
@@ -707,9 +631,6 @@ def show_analysis_step():
     with col4:
         total_capacity = sum(max_classes.values())
         st.metric("Total Tutor Capacity", total_capacity)
-    
-    # Display constraint
-    st.info(f"🎯 **Course Diversity Constraint**: Each tutor can teach at most **{max_courses_per_tutor}** different courses")
     
     # Check feasibility
     if total_capacity < len(classes_df):
@@ -821,7 +742,6 @@ def show_optimization_step():
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
-    max_courses_per_tutor = st.session_state.max_courses_per_tutor
     
     # Build preference dictionary for LP
     pref_dict = {}
@@ -836,8 +756,7 @@ def show_optimization_step():
                 classes_df=classes_df,
                 tutors_df=tutors_df,
                 preferences=pref_dict,
-                tutor_max_classes=max_classes,
-                max_courses_per_tutor=max_courses_per_tutor
+                tutor_max_classes=max_classes
             )
             
             solution = lp.solve()
@@ -854,9 +773,6 @@ def show_optimization_step():
             
             if solution['status'] == 'Optimal':
                 st.success("✅ Optimization completed successfully!")
-                
-                # Show course diversity stats
-                st.info(f"🎯 **Course Diversity Applied**: Max {max_courses_per_tutor} different courses per tutor")
                 
                 # Create results dataframe
                 results_data = []
@@ -900,14 +816,13 @@ def show_optimization_step():
                 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
                 
-                # Tutor workload summary with course diversity
-                st.subheader("👥 Tutor Workload & Course Diversity")
+                # Tutor workload summary
+                st.subheader("👥 Tutor Workload Summary")
                 
                 workload_data = []
                 for tutor in tutors_df['tutor_name'].unique():
                     load = solution['tutor_loads'][tutor]
                     assigned_classes = load['classes']
-                    courses_taught = solution['tutor_courses'][tutor]
                     
                     # Group by course
                     courses_count = {}
@@ -921,20 +836,12 @@ def show_optimization_step():
                         'Total Classes': load['total'],
                         'Max Allowed': max_classes.get(tutor, 0),
                         'Utilization': f"{load['total']}/{max_classes.get(tutor, 0)}",
-                        'Courses Count': len(courses_taught),
                         'Courses Assigned': courses_str if courses_str else 'None'
                     })
                 
                 workload_df = pd.DataFrame(workload_data)
                 workload_df = workload_df.sort_values('Total Classes', ascending=False)
                 st.dataframe(workload_df, use_container_width=True, hide_index=True)
-                
-                # Check if course diversity constraint is satisfied
-                violators = workload_df[workload_df['Courses Count'] > max_courses_per_tutor]
-                if len(violators) == 0:
-                    st.success(f"✅ All tutors teach at most {max_courses_per_tutor} different courses")
-                else:
-                    st.error(f"⚠️ Some tutors exceed the {max_courses_per_tutor}-course limit (should not happen!)")
                 
                 # Visualization
                 fig_workload = px.bar(
@@ -947,20 +854,6 @@ def show_optimization_step():
                 )
                 fig_workload.update_layout(height=400, showlegend=False, xaxis_tickangle=45)
                 st.plotly_chart(fig_workload, use_container_width=True)
-                
-                # Course diversity visualization
-                fig_diversity = px.bar(
-                    workload_df[workload_df['Total Classes'] > 0],
-                    x='Tutor',
-                    y='Courses Count',
-                    title='Number of Different Courses per Tutor',
-                    color='Courses Count',
-                    color_continuous_scale='Greens'
-                )
-                fig_diversity.update_layout(height=400, showlegend=False, xaxis_tickangle=45)
-                fig_diversity.add_hline(y=max_courses_per_tutor, line_dash="dash", line_color="red", 
-                                       annotation_text=f"Max Allowed: {max_courses_per_tutor}")
-                st.plotly_chart(fig_diversity, use_container_width=True)
                 
                 # Unassigned classes
                 if solution['unassigned_classes']:
@@ -983,7 +876,7 @@ def show_optimization_step():
                             'Section': class_row['section'],
                             'Time': class_row['time'],
                             'Qualified Tutors': len(qualified_tutors),
-                            'Possible Reason': 'Time conflict, capacity exceeded, or course diversity limit'
+                            'Possible Reason': 'Time conflict or capacity exceeded'
                         })
                     
                     unassigned_df = pd.DataFrame(unassigned_data)
@@ -1016,7 +909,6 @@ def show_optimization_step():
                 st.write("- Insufficient tutor capacity")
                 st.write("- Too many time conflicts")
                 st.write("- No qualified tutors for some courses")
-                st.write(f"- Course diversity constraint (max {max_courses_per_tutor} courses per tutor) too restrictive")
             
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
