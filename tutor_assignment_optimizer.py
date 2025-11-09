@@ -9,7 +9,7 @@ import plotly.graph_objects as go
 from datetime import time as dt_time
 
 class TutorAssignmentLP:
-    """Tutor-Class Assignment using Linear Programming with time conflict detection."""
+    """Tutor-Class Assignment using Linear Programming with time conflict detection and balanced workload."""
     
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
@@ -33,6 +33,8 @@ class TutorAssignmentLP:
         
         self.model = None
         self.x_vars = {}
+        self.y_vars = {}  # Indicator for 2+ classes
+        self.z_vars = {}  # Indicator for 3+ classes
         self.time_conflicts = self._detect_time_conflicts()
         
     def _detect_time_conflicts(self) -> Dict[Tuple[str, str], bool]:
@@ -101,7 +103,7 @@ class TutorAssignmentLP:
         return False
     
     def build_model(self):
-        """Build the LP model."""
+        """Build the LP model with preference for 1-2 classes per tutor."""
         self.model = pulp.LpProblem("Tutor_Class_Assignment", pulp.LpMaximize)
         
         # Decision variables: x[(tutor, course, class_id)] = 1 if assigned
@@ -118,12 +120,23 @@ class TutorAssignmentLP:
                         cat='Binary'
                     )
         
-        # Objective: Maximize total preference satisfaction
-        objective = pulp.lpSum([
+        # Auxiliary variables: indicators for tutors with 2+ and 3+ classes
+        for tutor in self.tutors:
+            self.y_vars[tutor] = pulp.LpVariable(f"y_{tutor}_2plus", cat='Binary')
+            self.z_vars[tutor] = pulp.LpVariable(f"z_{tutor}_3plus", cat='Binary')
+        
+        # Objective: Maximize preference satisfaction - penalties for multiple classes
+        # Weights: Preference = 10, Penalty for 2+ classes = 3, Penalty for 3+ classes = 7
+        # This encourages: 1 class (no penalty) > 2 classes (3 penalty) > 3+ classes (10 penalty)
+        preference_term = pulp.lpSum([
             self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
         ])
-        self.model += objective
+        
+        penalty_2plus = pulp.lpSum([3 * self.y_vars[tutor] for tutor in self.tutors])
+        penalty_3plus = pulp.lpSum([7 * self.z_vars[tutor] for tutor in self.tutors])
+        
+        self.model += preference_term - penalty_2plus - penalty_3plus
         
         self._add_constraints()
     
@@ -158,6 +171,24 @@ class TutorAssignmentLP:
             self.model += (
                 total_classes <= max_classes,
                 f"Tutor_Workload_{tutor}"
+            )
+            
+            # Constraint 2a: Link y_vars (indicator for 2+ classes)
+            # If total_classes >= 2, then y must be 1
+            # Using: total_classes >= 2 - M*(1 - y)
+            # When y=1: total_classes >= 2 (forces y=1 if we have 2+ classes)
+            # When y=0: total_classes >= 2-M (not constraining)
+            M = max_classes
+            self.model += (
+                total_classes >= 2 - M * (1 - self.y_vars[tutor]),
+                f"Indicator_2plus_{tutor}"
+            )
+            
+            # Constraint 2b: Link z_vars (indicator for 3+ classes)
+            # If total_classes >= 3, then z must be 1
+            self.model += (
+                total_classes >= 3 - M * (1 - self.z_vars[tutor]),
+                f"Indicator_3plus_{tutor}"
             )
         
         # Constraint 3: Time conflict prevention
@@ -425,8 +456,12 @@ def main():
     )
     
     st.title("👨‍🏫 Tutor-Class Assignment Optimizer (T3)")
-    st.markdown("**Linear Programming Solution with Time Conflict Detection**")
+    st.markdown("**Linear Programming with Balanced Workload (Prefers 1-2 Classes per Tutor)**")
     st.markdown("---")
+    
+    # Add info box about the balanced approach
+    st.info("🎯 **Optimization Strategy**: This tool prefers assigning 1-2 classes per tutor to distribute workload evenly. " + 
+            "It will use 3+ classes only when necessary to cover all classes.")
     
     # Initialize session state
     if 'step' not in st.session_state:
@@ -541,6 +576,8 @@ def show_review_step():
     - ❌ Red = Failed to parse (defaulted to 3)
     
     You can edit any value in the table below.
+    
+    💡 **Tip**: The optimizer prefers 1-2 classes per tutor. Set realistic maximums to allow flexibility when needed.
     """)
     
     # Create editable dataframe
@@ -749,7 +786,7 @@ def show_optimization_step():
         for course in courses:
             pref_dict[(tutor, course)] = 10  # All preferences = 10
     
-    with st.spinner("🔄 Running Linear Programming optimization..."):
+    with st.spinner("🔄 Running Linear Programming optimization with balanced workload..."):
         try:
             # Create and solve LP
             lp = TutorAssignmentLP(
@@ -773,6 +810,24 @@ def show_optimization_step():
             
             if solution['status'] == 'Optimal':
                 st.success("✅ Optimization completed successfully!")
+                
+                # Workload distribution stats
+                workload_counts = {}
+                for tutor, load in solution['tutor_loads'].items():
+                    total = load['total']
+                    workload_counts[total] = workload_counts.get(total, 0) + 1
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("Tutors with 1 class", workload_counts.get(1, 0))
+                with col2:
+                    st.metric("Tutors with 2 classes", workload_counts.get(2, 0))
+                with col3:
+                    st.metric("Tutors with 3+ classes", sum(workload_counts.get(i, 0) for i in range(3, 100)))
+                with col4:
+                    st.metric("Unused tutors", workload_counts.get(0, 0))
+                
+                st.markdown("---")
                 
                 # Create results dataframe
                 results_data = []
@@ -848,7 +903,7 @@ def show_optimization_step():
                     workload_df,
                     x='Tutor',
                     y='Total Classes',
-                    title='Tutor Workload Distribution',
+                    title='Tutor Workload Distribution (Optimized for 1-2 Classes per Tutor)',
                     color='Total Classes',
                     color_continuous_scale='Blues'
                 )
@@ -899,7 +954,7 @@ def show_optimization_step():
                 st.download_button(
                     label="📥 Download Results (Excel)",
                     data=output.getvalue(),
-                    file_name="tutor_assignments_T3.xlsx",
+                    file_name="tutor_assignments_T3_balanced.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
