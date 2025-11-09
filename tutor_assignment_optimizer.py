@@ -13,7 +13,8 @@ class TutorAssignmentLP:
     
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
-                 tutor_max_classes: Dict[str, int]):
+                 tutor_max_classes: Dict[str, int],
+                 preference_order: Dict[Tuple[str, str], int] = None):
         """
         Initialize the LP problem.
         
@@ -22,11 +23,13 @@ class TutorAssignmentLP:
             tutors_df: DataFrame with tutor information
             preferences: Dict mapping (tutor, course) -> preference_score
             tutor_max_classes: Dict mapping tutor -> max_classes
+            preference_order: Dict mapping (tutor, course) -> order (1=first, 2=second, etc.)
         """
         self.classes_df = classes_df
         self.tutors_df = tutors_df
         self.preferences = preferences
         self.tutor_max_classes = tutor_max_classes
+        self.preference_order = preference_order or {}
         
         self.tutors = list(tutors_df['tutor_name'].unique())
         self.courses = list(classes_df['course'].unique())
@@ -118,14 +121,38 @@ class TutorAssignmentLP:
                         cat='Binary'
                     )
         
-        # Objective: Maximize total preference satisfaction
+        # Objective: Maximize WEIGHTED preference satisfaction
+        # Weight by course order: 1st choice = 10, 2nd = 8, 3rd = 6, 4th = 4, 5th+ = 2
         objective = pulp.lpSum([
-            self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
+            self._get_preference_weight(tutor, course) * self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
         ])
         self.model += objective
         
         self._add_constraints()
+    
+    def _get_preference_weight(self, tutor: str, course: str) -> float:
+        """
+        Get weighted preference score based on course order in tutor's preference list.
+        
+        1st choice course: weight = 10
+        2nd choice course: weight = 8
+        3rd choice course: weight = 6
+        4th choice course: weight = 4
+        5th+ choice course: weight = 2
+        """
+        order = self.preference_order.get((tutor, course), 1)
+        
+        if order == 1:
+            return 10.0  # First choice - highest priority
+        elif order == 2:
+            return 8.0   # Second choice
+        elif order == 3:
+            return 6.0   # Third choice
+        elif order == 4:
+            return 4.0   # Fourth choice
+        else:
+            return 2.0   # Fifth+ choice - lowest priority
     
     def _add_constraints(self):
         """Add all constraints to the model."""
@@ -341,10 +368,10 @@ def load_file1_classes(file_path: str) -> pd.DataFrame:
     return pd.DataFrame(classes_data)
 
 
-def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, int], Dict[str, str]]:
+def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, int], Dict[str, str], Dict[Tuple[str, str], int]]:
     """
     Load and parse File 2 (Tutor Preferences).
-    Returns: (tutors_df, preferences_dict, max_classes_dict, parsing_status)
+    Returns: (tutors_df, preferences_dict, max_classes_dict, parsing_status, preference_order_dict)
     """
     df = pd.read_excel(file_path, sheet_name=0)
     
@@ -359,6 +386,7 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
     preferences = {}
     max_classes = {}
     parsing_status = {}
+    preference_order = {}  # NEW: Track order of preferences
     
     for idx, row in df.iterrows():
         # Get tutor name
@@ -377,8 +405,10 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
         t3_pref_text = row[t3_pref_col]
         t3_courses_raw = extract_course_codes(t3_pref_text)
         
-        # Expand dual codes (e.g., "ACTL3162/5106" -> ["ACTL3162", "ACTL5106"])
-        t3_courses_expanded = []
+        # IMPORTANT: Preserve order from the original text
+        # Extract courses in the order they appear in the preference text
+        ordered_courses = []
+        seen = set()
         for code in t3_courses_raw:
             if '/' in code:
                 # Split dual code: "ACTL3162/5106" -> ["ACTL3162", "ACTL5106"]
@@ -386,16 +416,20 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
                 base = parts[0]  # e.g., "ACTL3162"
                 prefix = base[:4]  # e.g., "ACTL"
                 second_code = prefix + parts[1]  # e.g., "ACTL5106"
-                t3_courses_expanded.append(base)
-                t3_courses_expanded.append(second_code)
+                
+                if base not in seen:
+                    ordered_courses.append(base)
+                    seen.add(base)
+                if second_code not in seen:
+                    ordered_courses.append(second_code)
+                    seen.add(second_code)
             else:
-                t3_courses_expanded.append(code)
-        
-        # Remove duplicates
-        t3_courses_expanded = list(set(t3_courses_expanded))
+                if code not in seen:
+                    ordered_courses.append(code)
+                    seen.add(code)
         
         # Only include tutors who have T3 preferences
-        if len(t3_courses_expanded) > 0:
+        if len(ordered_courses) > 0:
             # Parse max classes
             max_val, status = parse_max_classes(row[max_classes_col])
             
@@ -405,16 +439,20 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
                 'last_name': str(row[last_name_col]) if pd.notna(row[last_name_col]) else '',
                 'email': str(row[df.columns[9]]) if pd.notna(row[df.columns[9]]) else '',
                 't3_preferences_raw': str(t3_pref_text),
-                't3_courses': ', '.join(sorted(t3_courses_expanded)),
+                't3_courses': ', '.join(ordered_courses),
                 'max_classes': max_val,
                 'max_classes_status': status
             })
             
-            preferences[tutor_name] = t3_courses_expanded
+            preferences[tutor_name] = ordered_courses
             max_classes[tutor_name] = max_val
             parsing_status[tutor_name] = status
+            
+            # Store preference order: (tutor, course) -> order (1 = first choice, 2 = second, etc.)
+            for order, course in enumerate(ordered_courses, start=1):
+                preference_order[(tutor_name, course)] = order
     
-    return pd.DataFrame(tutors_data), preferences, max_classes, parsing_status
+    return pd.DataFrame(tutors_data), preferences, max_classes, parsing_status, preference_order
 
 
 def main():
@@ -493,11 +531,12 @@ def show_upload_step():
                 st.session_state.classes_df = classes_df
                 
                 # Load tutors
-                tutors_df, preferences, max_classes, parsing_status = load_file2_tutors(file2)
+                tutors_df, preferences, max_classes, parsing_status, preference_order = load_file2_tutors(file2)
                 st.session_state.tutors_df = tutors_df
                 st.session_state.preferences = preferences
                 st.session_state.max_classes = max_classes
                 st.session_state.parsing_status = parsing_status
+                st.session_state.preference_order = preference_order
                 
                 # Show preview
                 st.success("✅ Files loaded successfully!")
@@ -738,16 +777,29 @@ def show_optimization_step():
     """Step 4: Run optimization and show results."""
     st.header("Step 4: Optimization Results")
     
+    st.info("""
+    **🎯 Preference Weighting Strategy:**
+    - **1st choice course:** Weight = 10 (Highest priority)
+    - **2nd choice course:** Weight = 8
+    - **3rd choice course:** Weight = 6
+    - **4th choice course:** Weight = 4
+    - **5th+ choice courses:** Weight = 2
+    
+    The optimizer will try to assign tutors to their **first-choice** courses before assigning to other courses. If a tutor wants 3 classes, they'll likely get all 3 from their top course!
+    """)
+    
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
+    preference_order = st.session_state.get('preference_order', {})
     
     # Build preference dictionary for LP
+    # Mark all courses in preference list as valid (weight will be determined by order)
     pref_dict = {}
     for tutor, courses in preferences.items():
         for course in courses:
-            pref_dict[(tutor, course)] = 10  # All preferences = 10
+            pref_dict[(tutor, course)] = 10  # Base score (will be weighted by order in LP)
     
     with st.spinner("🔄 Running Linear Programming optimization..."):
         try:
@@ -756,7 +808,8 @@ def show_optimization_step():
                 classes_df=classes_df,
                 tutors_df=tutors_df,
                 preferences=pref_dict,
-                tutor_max_classes=max_classes
+                tutor_max_classes=max_classes,
+                preference_order=preference_order  # NEW: Pass preference order for weighting
             )
             
             solution = lp.solve()
