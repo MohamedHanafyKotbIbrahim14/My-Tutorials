@@ -267,6 +267,8 @@ def parse_max_classes(value) -> Tuple[int, str]:
         num = int(float(value_str))
         if num > 100:  # Likely a year or invalid number
             return 3, f"Invalid large number '{value_str}' (defaulted to 3)"
+        if num > 50:  # Unreasonably high for class count
+            return 3, f"Value too high '{num}' (defaulted to 3)"
         return num, "OK"
     except:
         pass
@@ -277,7 +279,7 @@ def parse_max_classes(value) -> Tuple[int, str]:
             parts = value_str.split('-')
             low = int(parts[0].strip())
             high = int(parts[1].strip())
-            if low <= 10 and high <= 10:  # Reasonable range for classes
+            if low <= 50 and high <= 50:  # Reasonable range for classes
                 avg = (low + high) // 2
                 return avg, f"Range {value_str} (using average: {avg})"
         except:
@@ -287,7 +289,7 @@ def parse_max_classes(value) -> Tuple[int, str]:
     if '+' in value_str:
         try:
             num = int(value_str.replace('+', '').strip())
-            if num <= 10:
+            if num <= 50:
                 return num, f"'{value_str}' (using {num})"
         except:
             pass
@@ -296,7 +298,7 @@ def parse_max_classes(value) -> Tuple[int, str]:
     numbers = re.findall(r'\b\d+\b', value_str)
     for num_str in numbers:
         num = int(num_str)
-        if num <= 10:  # Reasonable class count
+        if 1 <= num <= 50:  # Reasonable class count (1-50)
             return num, f"Extracted {num} from '{value_str}'"
     
     # Default fallback
@@ -581,7 +583,7 @@ def show_review_step():
             new_value = st.number_input(
                 "Max",
                 min_value=1,
-                max_value=10,
+                max_value=50,  # Increased to handle edge cases
                 value=int(row['max_classes']),
                 key=f"max_{idx}",
                 label_visibility="collapsed"
