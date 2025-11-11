@@ -708,7 +708,7 @@ def show_review_tutors_step():
     - 🟢 **Green (✅)**: Information is clear and valid
     - 🟡 **Yellow (⚠️)**: Information needs attention
     - 🔴 **Red (❌)**: No information provided
-    - 🟠 **Orange (⚠️ Check Load)**: Max classes > 5, verify if this workload is appropriate
+    - 🟠 **Orange (⚠️ Check Load)**: Max classes > 4, verify if this workload is appropriate
     """)
     
     st.markdown("---")
@@ -723,7 +723,7 @@ def show_review_tutors_step():
         st.success("✅ All max_classes values parsed successfully!")
     
     if len(high_load_tutors) > 0:
-        st.warning(f"🟠 {len(high_load_tutors)} tutor(s) have max classes > 5 - please verify these workloads are appropriate")
+        st.warning(f"🟠 {len(high_load_tutors)} tutor(s) have max classes > 4 - please verify these workloads are appropriate")
     
     st.markdown("---")
     
@@ -814,8 +814,8 @@ def show_review_tutors_step():
             status = row['max_classes_status']
             current_max_value = int(row['max_classes'])
             
-            # Check if max classes > 5
-            if current_max_value > 5:
+            # Check if max classes > 4
+            if current_max_value > 4:
                 st.warning(f"🟠 Check Load: {current_max_value} classes")
                 st.caption(f"Original: {status[:30]}")
             elif 'defaulted' in status.lower() or 'could not parse' in status.lower():
@@ -865,7 +865,7 @@ def show_review_tutors_step():
     
     high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 5)
     if high_load_count > 0:
-        st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 5:")
+        st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 4:")
         high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 5]
         high_load_list.sort(key=lambda x: x[1], reverse=True)
         
