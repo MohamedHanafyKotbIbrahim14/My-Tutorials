@@ -14,7 +14,8 @@ class TutorAssignmentLP:
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
                  tutor_max_classes: Dict[str, int],
-                 tutor_degrees: Dict[str, str]):
+                 tutor_degrees: Dict[str, str],
+                 course_diversity_penalty: float = 5.0):
         """
         Initialize the LP problem.
         
@@ -24,18 +25,21 @@ class TutorAssignmentLP:
             preferences: Dict mapping (tutor, course) -> preference_score
             tutor_max_classes: Dict mapping tutor -> max_classes
             tutor_degrees: Dict mapping tutor -> degree (e.g., "PhD", "Master", "Bachelor")
+            course_diversity_penalty: Penalty for teaching multiple different courses
         """
         self.classes_df = classes_df
         self.tutors_df = tutors_df
         self.preferences = preferences
         self.tutor_max_classes = tutor_max_classes
         self.tutor_degrees = tutor_degrees
+        self.course_diversity_penalty = course_diversity_penalty
         
         self.tutors = list(tutors_df['tutor_name'].unique())
         self.courses = list(classes_df['course'].unique())
         
         self.model = None
         self.x_vars = {}
+        self.y_vars = {}  # Binary variable: tutor teaches course
         self.time_conflicts = self._detect_time_conflicts()
         
     def _detect_time_conflicts(self) -> Dict[Tuple[str, str], bool]:
@@ -124,7 +128,7 @@ class TutorAssignmentLP:
         return False
     
     def build_model(self):
-        """Build the LP model."""
+        """Build the LP model with course diversity penalty."""
         self.model = pulp.LpProblem("Tutor_Class_Assignment", pulp.LpMaximize)
         
         # Decision variables: x[(tutor, course, class_id)] = 1 if assigned
@@ -147,19 +151,45 @@ class TutorAssignmentLP:
                         cat='Binary'
                     )
         
-        # Objective: Maximize total preference satisfaction
-        objective = pulp.lpSum([
+        # Binary variables: y[(tutor, course)] = 1 if tutor teaches at least one class from course
+        self.y_vars = {}
+        for tutor in self.tutors:
+            for course in self.courses:
+                # Only create y variable if there's at least one possible x variable
+                has_possible_assignment = any(
+                    (tutor, course, class_id) in self.x_vars
+                    for idx, row in self.classes_df.iterrows()
+                    if row['course'] == course
+                    for class_id in [row['class_id']]
+                )
+                
+                if has_possible_assignment:
+                    self.y_vars[(tutor, course)] = pulp.LpVariable(
+                        f"y_{tutor}_{course}",
+                        cat='Binary'
+                    )
+        
+        # Objective: Maximize preference satisfaction - penalty for teaching multiple courses
+        preference_term = pulp.lpSum([
             self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
         ])
-        self.model += objective
+        
+        # Penalty term: discourage teaching many different courses
+        diversity_penalty_term = self.course_diversity_penalty * pulp.lpSum([
+            self.y_vars[(tutor, course)]
+            for (tutor, course) in self.y_vars.keys()
+        ])
+        
+        self.model += preference_term - diversity_penalty_term
         
         self._add_constraints()
     
     def _add_constraints(self):
         """Add all constraints to the model."""
         
-        # Constraint 1: Each class must have exactly ONE tutor
+        # Constraint 1: Each class should have exactly ONE tutor (but allow unassigned if infeasible)
+        # We use <= instead of == to allow some classes to remain unassigned if necessary
         for idx, row in self.classes_df.iterrows():
             course = row['course']
             class_id = row['class_id']
@@ -170,9 +200,10 @@ class TutorAssignmentLP:
                 if (tutor, course, class_id) in self.x_vars
             ])
             
+            # Try to assign exactly 1, but allow 0 if infeasible
             self.model += (
-                assigned_tutors == 1,
-                f"Class_Coverage_{course}_{class_id}"
+                assigned_tutors <= 1,
+                f"Class_Coverage_Max_{course}_{class_id}"
             )
         
         # Constraint 2: Tutor workload limit
@@ -190,25 +221,41 @@ class TutorAssignmentLP:
             )
         
         # Constraint 3: Time conflict prevention
-        # If tutor is assigned to two classes that conflict, sum must be ≤ 1
         for tutor in self.tutors:
-            # Get all classes this tutor could be assigned to
             tutor_possible_classes = [
                 (course, class_id) 
                 for (t, course, class_id) in self.x_vars.keys() 
                 if t == tutor
             ]
             
-            # Check all pairs for conflicts
             for i, (course1, class1) in enumerate(tutor_possible_classes):
                 for course2, class2 in tutor_possible_classes[i+1:]:
                     if (class1, class2) in self.time_conflicts:
-                        # These two classes conflict - tutor can't teach both
                         self.model += (
                             self.x_vars[(tutor, course1, class1)] + 
                             self.x_vars[(tutor, course2, class2)] <= 1,
                             f"Time_Conflict_{tutor}_{class1}_{class2}"
                         )
+        
+        # Constraint 4: Link y variables to x variables
+        # If tutor teaches any class from a course, y must be 1
+        for tutor in self.tutors:
+            for course in self.courses:
+                if (tutor, course) in self.y_vars:
+                    # Get all x variables for this tutor-course combination
+                    relevant_x_vars = [
+                        self.x_vars[(tutor, course, class_id)]
+                        for (t, c, class_id) in self.x_vars.keys()
+                        if t == tutor and c == course
+                    ]
+                    
+                    if relevant_x_vars:
+                        # y >= x for each class (if any x is 1, y must be 1)
+                        for x_var in relevant_x_vars:
+                            self.model += (
+                                self.y_vars[(tutor, course)] >= x_var,
+                                f"Link_Y_X_{tutor}_{course}_{x_var.name}"
+                            )
     
     def solve(self):
         """Solve the optimization problem."""
@@ -228,21 +275,29 @@ class TutorAssignmentLP:
                 'objective_value': None,
                 'assignments': {},
                 'tutor_loads': {},
-                'unassigned_classes': []
+                'unassigned_classes': [],
+                'tutor_course_diversity': {}
             }
     
     def _extract_solution(self):
         """Extract solution from solved model."""
         assignments = {}  # (course, class_id) -> tutor
-        tutor_loads = {tutor: {'classes': [], 'total': 0} for tutor in self.tutors}
+        tutor_loads = {tutor: {'classes': [], 'total': 0, 'courses': set()} for tutor in self.tutors}
         unassigned_classes = []
+        tutor_course_diversity = {}
         
         # Extract assignments
         for (tutor, course, class_id), var in self.x_vars.items():
-            if var.varValue == 1:
+            if var.varValue and var.varValue > 0.5:  # Binary variable
                 assignments[(course, class_id)] = tutor
                 tutor_loads[tutor]['classes'].append((course, class_id))
                 tutor_loads[tutor]['total'] += 1
+                tutor_loads[tutor]['courses'].add(course)
+        
+        # Calculate course diversity for each tutor
+        for tutor in self.tutors:
+            num_different_courses = len(tutor_loads[tutor]['courses'])
+            tutor_course_diversity[tutor] = num_different_courses
         
         # Find unassigned classes
         for idx, row in self.classes_df.iterrows():
@@ -256,7 +311,8 @@ class TutorAssignmentLP:
             'objective_value': pulp.value(self.model.objective),
             'assignments': assignments,
             'tutor_loads': tutor_loads,
-            'unassigned_classes': unassigned_classes
+            'unassigned_classes': unassigned_classes,
+            'tutor_course_diversity': tutor_course_diversity
         }
 
 
@@ -879,7 +935,7 @@ def show_analysis_step():
     
     # Check feasibility
     if total_capacity < len(classes_df):
-        st.error(f"⚠️ WARNING: Total tutor capacity ({total_capacity}) is less than total classes ({len(classes_df)}). Some classes may remain unassigned!")
+        st.warning(f"⚠️ Total tutor capacity ({total_capacity}) is less than total classes ({len(classes_df)}). Optimization will proceed and show unassigned classes.")
     else:
         surplus = total_capacity - len(classes_df)
         st.success(f"✅ Sufficient capacity: {surplus} extra class slots available")
@@ -928,6 +984,8 @@ def show_analysis_step():
     
     # Course coverage analysis with degree constraints
     st.subheader("📋 Course Coverage Analysis (with Degree Requirements)")
+    
+    st.info("ℹ️ Even if some courses show insufficient capacity, optimization will still run and show which classes remain unassigned.")
     
     coverage_data = []
     courses = sorted(classes_df['course'].unique())
@@ -979,6 +1037,8 @@ def show_analysis_step():
                 st.error(f"**{row['Course']}**: No PhD tutors available who prefer this course!")
             elif row['Qualified Tutors'] == 0:
                 st.error(f"**{row['Course']}**: No tutors have expressed preference for this course!")
+        
+        st.info("💡 The optimization will still run and show which specific classes cannot be assigned.")
     
     st.markdown("---")
     
@@ -1005,13 +1065,38 @@ def show_optimization_step():
     max_classes = st.session_state.max_classes
     degrees = st.session_state.degrees
     
+    # Optimization parameters
+    st.subheader("⚙️ Optimization Parameters")
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        course_diversity_penalty = st.slider(
+            "Course Diversity Penalty",
+            min_value=0.0,
+            max_value=20.0,
+            value=5.0,
+            step=0.5,
+            help="Higher penalty encourages tutors to teach fewer different courses (1-2 courses preferred)"
+        )
+    
+    with col2:
+        st.info(f"""
+        **Current Setting: {course_diversity_penalty}**
+        
+        - **0**: No penalty (tutors can teach many courses)
+        - **5**: Moderate penalty (recommended)
+        - **10+**: Strong penalty (tutors prefer 1-2 courses only)
+        """)
+    
+    st.markdown("---")
+    
     # Build preference dictionary for LP
     pref_dict = {}
     for tutor, courses in preferences.items():
         for course in courses:
             pref_dict[(tutor, course)] = 10  # All preferences = 10
     
-    with st.spinner("🔄 Running Linear Programming optimization with degree constraints..."):
+    with st.spinner("🔄 Running Linear Programming optimization with degree constraints and course diversity penalty..."):
         try:
             # Create and solve LP
             lp = TutorAssignmentLP(
@@ -1019,24 +1104,31 @@ def show_optimization_step():
                 tutors_df=tutors_df,
                 preferences=pref_dict,
                 tutor_max_classes=max_classes,
-                tutor_degrees=degrees
+                tutor_degrees=degrees,
+                course_diversity_penalty=course_diversity_penalty
             )
             
             solution = lp.solve()
             
             # Display results
-            col1, col2, col3 = st.columns(3)
+            col1, col2, col3, col4 = st.columns(4)
             with col1:
                 st.metric("Status", solution['status'])
             with col2:
                 if solution['objective_value']:
                     st.metric("Objective Value", f"{solution['objective_value']:.0f}")
             with col3:
+                assigned_count = len(classes_df) - len(solution['unassigned_classes'])
+                st.metric("Assigned Classes", assigned_count)
+            with col4:
                 unassigned_count = len(solution['unassigned_classes'])
                 st.metric("Unassigned Classes", unassigned_count)
             
             if solution['status'] == 'Optimal':
-                st.success("✅ Optimization completed successfully!")
+                if unassigned_count == 0:
+                    st.success("✅ Optimization completed successfully! All classes assigned!")
+                else:
+                    st.warning(f"⚠️ Optimization completed. {unassigned_count} classes could not be assigned (see details below).")
                 
                 # Create results dataframe
                 results_data = []
@@ -1074,7 +1166,7 @@ def show_optimization_step():
                 with col2:
                     filter_tutor = st.selectbox(
                         "Filter by Tutor:",
-                        options=['All'] + sorted([t for t in tutors_df['tutor_name'].unique()])
+                        options=['All', 'UNASSIGNED'] + sorted([t for t in tutors_df['tutor_name'].unique()])
                     )
                 with col3:
                     filter_level = st.selectbox(
@@ -1118,12 +1210,14 @@ def show_optimization_step():
                             ug_count += 1
                     
                     courses_str = ', '.join([f"{course}({count})" for course, count in courses_count.items()])
+                    num_different_courses = solution['tutor_course_diversity'].get(tutor, 0)
                     
                     tutor_degree = degrees.get(tutor, 'Not Specified')
                     
                     workload_data.append({
                         'Tutor': tutor,
                         'Degree': tutor_degree,
+                        'Different Courses': num_different_courses,
                         'PG Classes': pg_count,
                         'UG Classes': ug_count,
                         'Total Classes': load['total'],
@@ -1136,7 +1230,30 @@ def show_optimization_step():
                 workload_df = workload_df.sort_values('Total Classes', ascending=False)
                 st.dataframe(workload_df, use_container_width=True, hide_index=True)
                 
+                # Course diversity analysis
+                st.subheader("📊 Course Diversity Analysis")
+                diversity_summary = workload_df[workload_df['Total Classes'] > 0]['Different Courses'].value_counts().sort_index()
+                
+                col1, col2 = st.columns([1, 2])
+                with col1:
+                    st.write("**Tutors by Number of Different Courses:**")
+                    for num_courses, count in diversity_summary.items():
+                        st.write(f"- Teaching {num_courses} course(s): {count} tutor(s)")
+                
+                with col2:
+                    fig_diversity = px.bar(
+                        x=diversity_summary.index,
+                        y=diversity_summary.values,
+                        labels={'x': 'Number of Different Courses', 'y': 'Number of Tutors'},
+                        title='Distribution of Course Diversity',
+                        color=diversity_summary.values,
+                        color_continuous_scale='Blues'
+                    )
+                    fig_diversity.update_layout(showlegend=False)
+                    st.plotly_chart(fig_diversity, use_container_width=True)
+                
                 # Visualization
+                st.subheader("📈 Workload Visualization")
                 fig_workload = px.bar(
                     workload_df[workload_df['Total Classes'] > 0],
                     x='Tutor',
@@ -1191,6 +1308,11 @@ def show_optimization_step():
                     
                     unassigned_df = pd.DataFrame(unassigned_data)
                     st.dataframe(unassigned_df, use_container_width=True, hide_index=True)
+                    
+                    # Group unassigned by course
+                    st.subheader("📋 Unassigned Classes by Course")
+                    unassigned_by_course = unassigned_df.groupby(['Course', 'Level']).size().reset_index(name='Unassigned Count')
+                    st.dataframe(unassigned_by_course, use_container_width=True, hide_index=True)
                 else:
                     st.success("🎉 All classes successfully assigned!")
                 
@@ -1205,21 +1327,21 @@ def show_optimization_step():
                     workload_df.to_excel(writer, sheet_name='Tutor Workload', index=False)
                     if solution['unassigned_classes']:
                         unassigned_df.to_excel(writer, sheet_name='Unassigned', index=False)
+                        unassigned_by_course.to_excel(writer, sheet_name='Unassigned by Course', index=False)
                 
                 st.download_button(
                     label="📥 Download Results (Excel)",
                     data=output.getvalue(),
-                    file_name="tutor_assignments_T3_with_degrees.xlsx",
+                    file_name="tutor_assignments_T3_optimized.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
             else:
                 st.error(f"❌ Optimization failed: {solution['status']}")
                 st.write("Possible reasons:")
-                st.write("- Insufficient tutor capacity")
-                st.write("- Too many time conflicts")
-                st.write("- No qualified tutors for some courses (check degree requirements)")
-                st.write("- PG courses may need PhD tutors")
+                st.write("- Model is infeasible due to constraints")
+                st.write("- Try adjusting course diversity penalty")
+                st.write("- Check degree requirements and tutor availability")
             
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
