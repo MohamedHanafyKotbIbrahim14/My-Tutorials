@@ -463,7 +463,6 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
                 'tutor_name': tutor_name,
                 'first_name': str(row[first_name_col]) if pd.notna(row[first_name_col]) else '',
                 'last_name': str(row[last_name_col]) if pd.notna(row[last_name_col]) else '',
-                'email': str(row[df.columns[9]]) if pd.notna(row[df.columns[9]]) else '',
                 'degree': degree_info,
                 't3_preferences_raw': str(t3_pref_text),
                 't3_courses': ', '.join(sorted(t3_courses_expanded)),
