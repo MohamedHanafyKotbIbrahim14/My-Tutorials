@@ -225,38 +225,44 @@ class TutorAssignmentLP:
                 for x_var in relevant_x:
                     self.model += (self.y_vars[(tutor, course)] >= x_var)
     
-    def solve(self, time_limit=180):
-        """Solve the optimization problem."""
-        if self.model is None:
-            self.build_model()
-        
-        solver = pulp.PULP_CBC_CMD(
-            msg=0,  # Suppress output
-            timeLimit=time_limit,
-            gapRel=0.02,  # Stop if within 2% of optimal
-            threads=4  # Use multiple threads
-        )
-        
-        start_time = time_module.time()
-        self.model.solve(solver)
-        solve_time = time_module.time() - start_time
-        
-        status = pulp.LpStatus[self.model.status]
-        
-        if status in ['Optimal', 'Not Solved']:
-            solution = self._extract_solution()
-            solution['solve_time'] = solve_time
-            return solution
-        else:
-            return {
-                'status': status,
-                'objective_value': None,
-                'assignments': {},
-                'tutor_loads': {},
-                'unassigned_classes': [],
-                'tutor_course_diversity': {},
-                'solve_time': solve_time
-            }
+def solve(self, time_limit=None):
+    """Solve the optimization problem."""
+    if self.model is None:
+        self.build_model()
+    
+    # Configure solver - no time limit if None
+    solver_params = {
+        'msg': 0,  # Suppress output
+        'gapRel': 0.02,  # Stop if within 2% of optimal
+        'threads': 4  # Use multiple threads
+    }
+    
+    # Only add time limit if specified
+    if time_limit is not None:
+        solver_params['timeLimit'] = time_limit
+    
+    solver = pulp.PULP_CBC_CMD(**solver_params)
+    
+    start_time = time_module.time()
+    self.model.solve(solver)
+    solve_time = time_module.time() - start_time
+    
+    status = pulp.LpStatus[self.model.status]
+    
+    if status in ['Optimal', 'Not Solved']:
+        solution = self._extract_solution()
+        solution['solve_time'] = solve_time
+        return solution
+    else:
+        return {
+            'status': status,
+            'objective_value': None,
+            'assignments': {},
+            'tutor_loads': {},
+            'unassigned_classes': [],
+            'tutor_course_diversity': {},
+            'solve_time': solve_time
+        }
     
     def _extract_solution(self):
         """Extract solution from solved model."""
@@ -1035,7 +1041,7 @@ def show_optimization_step():
                 "PhD Priority Bonus",
                 min_value=0.0,
                 max_value=10.0,
-                value=10.0,
+                value=2.0,
                 step=0.5,
                 help="Higher bonus gives more priority to assigning PhD students"
             )
@@ -1055,7 +1061,7 @@ def show_optimization_step():
                 "Master Priority Bonus",
                 min_value=0.0,
                 max_value=5.0,
-                value=5.0,
+                value=1.0,
                 step=0.5,
                 help="Higher bonus gives more priority to Master students (should be less than PhD bonus)"
             )
@@ -1069,15 +1075,6 @@ def show_optimization_step():
             
             📚 **Master students get medium priority**
             """)
-        
-        time_limit = st.slider(
-            "Optimization Time Limit (seconds)",
-            min_value=30,
-            max_value=300,
-            value=120,
-            step=30,
-            help="Maximum time for optimization"
-        )
         
         # Submit button
         run_optimization = st.form_submit_button("🚀 Run Optimization", type="primary")
@@ -1124,10 +1121,11 @@ def show_optimization_step():
                 num_vars = len(lp.x_vars) + len(lp.y_vars)
                 st.info(f"📊 Model created with {num_vars} decision variables ({len(lp.x_vars)} assignments + {len(lp.y_vars)} course indicators)")
                 
-                status_text.text("Solving optimization problem...")
+                status_text.text("Solving optimization problem... (no time limit - finding optimal solution)")
                 progress_bar.progress(60)
                 
-                solution = lp.solve(time_limit=time_limit)
+                # Call solve without time limit (will run until optimal)
+                solution = lp.solve(time_limit=None)
                 
                 progress_bar.progress(100)
                 status_text.text(f"✅ Optimization completed in {solution.get('solve_time', 0):.1f} seconds")
@@ -1431,7 +1429,6 @@ def show_optimization_step():
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
-
 
 if __name__ == "__main__":
     main()
