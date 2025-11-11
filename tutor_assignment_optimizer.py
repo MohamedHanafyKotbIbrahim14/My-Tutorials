@@ -225,44 +225,44 @@ class TutorAssignmentLP:
                 for x_var in relevant_x:
                     self.model += (self.y_vars[(tutor, course)] >= x_var)
     
-def solve(self, time_limit=None):
-    """Solve the optimization problem."""
-    if self.model is None:
-        self.build_model()
-    
-    # Configure solver - no time limit if None
-    solver_params = {
-        'msg': 0,  # Suppress output
-        'gapRel': 0.02,  # Stop if within 2% of optimal
-        'threads': 4  # Use multiple threads
-    }
-    
-    # Only add time limit if specified
-    if time_limit is not None:
-        solver_params['timeLimit'] = time_limit
-    
-    solver = pulp.PULP_CBC_CMD(**solver_params)
-    
-    start_time = time_module.time()
-    self.model.solve(solver)
-    solve_time = time_module.time() - start_time
-    
-    status = pulp.LpStatus[self.model.status]
-    
-    if status in ['Optimal', 'Not Solved']:
-        solution = self._extract_solution()
-        solution['solve_time'] = solve_time
-        return solution
-    else:
-        return {
-            'status': status,
-            'objective_value': None,
-            'assignments': {},
-            'tutor_loads': {},
-            'unassigned_classes': [],
-            'tutor_course_diversity': {},
-            'solve_time': solve_time
+    def solve(self, time_limit=None):
+        """Solve the optimization problem."""
+        if self.model is None:
+            self.build_model()
+        
+        # Configure solver - no time limit if None
+        solver_params = {
+            'msg': 0,  # Suppress output
+            'gapRel': 0.02,  # Stop if within 2% of optimal
+            'threads': 4  # Use multiple threads
         }
+        
+        # Only add time limit if specified
+        if time_limit is not None:
+            solver_params['timeLimit'] = time_limit
+        
+        solver = pulp.PULP_CBC_CMD(**solver_params)
+        
+        start_time = time_module.time()
+        self.model.solve(solver)
+        solve_time = time_module.time() - start_time
+        
+        status = pulp.LpStatus[self.model.status]
+        
+        if status in ['Optimal', 'Not Solved']:
+            solution = self._extract_solution()
+            solution['solve_time'] = solve_time
+            return solution
+        else:
+            return {
+                'status': status,
+                'objective_value': None,
+                'assignments': {},
+                'tutor_loads': {},
+                'unassigned_classes': [],
+                'tutor_course_diversity': {},
+                'solve_time': solve_time
+            }
     
     def _extract_solution(self):
         """Extract solution from solved model."""
@@ -1429,6 +1429,7 @@ def show_optimization_step():
             for key in list(st.session_state.keys()):
                 del st.session_state[key]
             st.rerun()
+
 
 if __name__ == "__main__":
     main()
