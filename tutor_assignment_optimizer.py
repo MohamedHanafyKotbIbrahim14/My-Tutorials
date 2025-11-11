@@ -715,7 +715,7 @@ def show_review_tutors_step():
     
     # Check for issues
     needs_review_max = tutors_df[tutors_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
-    high_load_tutors = tutors_df[tutors_df['max_classes'] > 5]
+    high_load_tutors = tutors_df[tutors_df['max_classes'] > 4]
     
     if len(needs_review_max) > 0:
         st.warning(f"⚠️ {len(needs_review_max)} tutor(s) have max_classes values that may need correction")
@@ -866,7 +866,7 @@ def show_review_tutors_step():
     high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 5)
     if high_load_count > 0:
         st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 4:")
-        high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 5]
+        high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 4]
         high_load_list.sort(key=lambda x: x[1], reverse=True)
         
         for name, max_val in high_load_list:
