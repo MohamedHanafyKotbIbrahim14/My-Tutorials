@@ -9,24 +9,27 @@ import plotly.graph_objects as go
 from datetime import time as dt_time
 
 class TutorAssignmentLP:
-    """Tutor-Class Assignment using Linear Programming with time conflict detection."""
+    """Tutor-Class Assignment using Linear Programming with time conflict detection and degree requirements."""
     
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
-                 tutor_max_classes: Dict[str, int]):
+                 tutor_max_classes: Dict[str, int],
+                 tutor_degrees: Dict[str, str]):
         """
         Initialize the LP problem.
         
         Args:
-            classes_df: DataFrame with columns [course, class_id, section, time, mode]
+            classes_df: DataFrame with columns [course, class_id, section, time, mode, course_level]
             tutors_df: DataFrame with tutor information
             preferences: Dict mapping (tutor, course) -> preference_score
             tutor_max_classes: Dict mapping tutor -> max_classes
+            tutor_degrees: Dict mapping tutor -> degree (e.g., "PhD", "Master", "Bachelor")
         """
         self.classes_df = classes_df
         self.tutors_df = tutors_df
         self.preferences = preferences
         self.tutor_max_classes = tutor_max_classes
+        self.tutor_degrees = tutor_degrees
         
         self.tutors = list(tutors_df['tutor_name'].unique())
         self.courses = list(classes_df['course'].unique())
@@ -100,6 +103,26 @@ class TutorAssignmentLP:
                         return True
         return False
     
+    def _can_tutor_teach_course(self, tutor: str, course: str, class_row: pd.Series) -> bool:
+        """
+        Check if tutor can teach this course based on degree and course level.
+        - PhD tutors can teach both PG and UG courses
+        - Non-PhD tutors can only teach UG courses
+        """
+        tutor_degree = self.tutor_degrees.get(tutor, "").upper()
+        course_level = class_row['course_level']
+        
+        # PhD can teach both PG and UG
+        if 'PHD' in tutor_degree or 'PH.D' in tutor_degree or 'DOCTOR' in tutor_degree:
+            return True
+        
+        # Non-PhD can only teach UG
+        if course_level == 'UG':
+            return True
+        
+        # Non-PhD cannot teach PG
+        return False
+    
     def build_model(self):
         """Build the LP model."""
         self.model = pulp.LpProblem("Tutor_Class_Assignment", pulp.LpMaximize)
@@ -111,8 +134,14 @@ class TutorAssignmentLP:
                 course = row['course']
                 class_id = row['class_id']
                 
-                # Only create variable if tutor has preference for this course
-                if self.preferences.get((tutor, course), 0) > 0:
+                # Check if tutor has preference for this course
+                has_preference = self.preferences.get((tutor, course), 0) > 0
+                
+                # Check if tutor can teach based on degree requirements
+                can_teach = self._can_tutor_teach_course(tutor, course, row)
+                
+                # Only create variable if both conditions are met
+                if has_preference and can_teach:
                     self.x_vars[(tutor, course, class_id)] = pulp.LpVariable(
                         f"x_{tutor}_{course}_{class_id}",
                         cat='Binary'
@@ -238,10 +267,20 @@ def extract_course_codes(text: str) -> List[str]:
     
     # Pattern to match course codes like ACTL2102, RISK5001, COMM2501/5501
     pattern = r'\b(ACTL|RISK|COMM)\d{4}(?:/\d{4})?\b'
-    # Use finditer to get full matches, not just the captured group
     codes = [match.group() for match in re.finditer(pattern, str(text))]
     
     return list(set(codes))
+
+
+def extract_degree(text: str) -> str:
+    """
+    Extract degree information from text.
+    Returns the full text for degree information.
+    """
+    if pd.isna(text) or str(text).strip() == '':
+        return "Not Specified"
+    
+    return str(text).strip()
 
 
 def parse_max_classes(value) -> Tuple[int, str]:
@@ -305,6 +344,16 @@ def parse_max_classes(value) -> Tuple[int, str]:
     return 3, f"Could not parse '{value_str}' (defaulted to 3)"
 
 
+def classify_course_level(course_code: str) -> str:
+    """
+    Classify course as PG (Postgraduate) or UG (Undergraduate) based on course code.
+    Default: All courses are PG unless specified otherwise.
+    """
+    # For now, all courses default to PG
+    # User will have option to change in the UI
+    return 'PG'
+
+
 def load_file1_classes(file_path: str) -> pd.DataFrame:
     """Load and parse File 1 (Classes for T3)."""
     df = pd.read_excel(file_path, header=None)
@@ -335,16 +384,17 @@ def load_file1_classes(file_path: str) -> pd.DataFrame:
                     'mode': str(row[3]) if pd.notna(row[3]) else '',
                     'status': str(row[4]) if pd.notna(row[4]) else '',
                     'time': str(row[5]) if pd.notna(row[5]) else '',
-                    'tutor': str(row[6]) if pd.notna(row[6]) else ''
+                    'tutor': str(row[6]) if pd.notna(row[6]) else '',
+                    'course_level': classify_course_level(current_course)  # Default PG
                 })
     
     return pd.DataFrame(classes_data)
 
 
-def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, int], Dict[str, str]]:
+def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]], Dict[str, int], Dict[str, str], Dict[str, str]]:
     """
     Load and parse File 2 (Tutor Preferences).
-    Returns: (tutors_df, preferences_dict, max_classes_dict, parsing_status)
+    Returns: (tutors_df, preferences_dict, max_classes_dict, parsing_status, degrees_dict)
     """
     df = pd.read_excel(file_path, sheet_name=0)
     
@@ -352,6 +402,7 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
     first_name_col = df.columns[6]
     last_name_col = df.columns[8]
     pref_name_col = df.columns[10]
+    degree_col = df.columns[57]  # BF column (index 57, 0-based)
     t3_pref_col = df.columns[108]  # DE - T3 preferences
     max_classes_col = df.columns[110]  # DG - Max classes (tutorials per session)
     
@@ -359,6 +410,7 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
     preferences = {}
     max_classes = {}
     parsing_status = {}
+    degrees = {}
     
     for idx, row in df.iterrows():
         # Get tutor name
@@ -372,6 +424,9 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
         
         if not tutor_name or tutor_name == '':
             continue
+        
+        # Get degree information from column BF
+        degree_info = extract_degree(row[degree_col])
         
         # Get T3 preferences
         t3_pref_text = row[t3_pref_col]
@@ -404,6 +459,7 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
                 'first_name': str(row[first_name_col]) if pd.notna(row[first_name_col]) else '',
                 'last_name': str(row[last_name_col]) if pd.notna(row[last_name_col]) else '',
                 'email': str(row[df.columns[9]]) if pd.notna(row[df.columns[9]]) else '',
+                'degree': degree_info,
                 't3_preferences_raw': str(t3_pref_text),
                 't3_courses': ', '.join(sorted(t3_courses_expanded)),
                 'max_classes': max_val,
@@ -413,8 +469,9 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
             preferences[tutor_name] = t3_courses_expanded
             max_classes[tutor_name] = max_val
             parsing_status[tutor_name] = status
+            degrees[tutor_name] = degree_info
     
-    return pd.DataFrame(tutors_data), preferences, max_classes, parsing_status
+    return pd.DataFrame(tutors_data), preferences, max_classes, parsing_status, degrees
 
 
 def main():
@@ -425,7 +482,7 @@ def main():
     )
     
     st.title("👨‍🏫 Tutor-Class Assignment Optimizer (T3)")
-    st.markdown("**Linear Programming Solution with Time Conflict Detection**")
+    st.markdown("**Linear Programming Solution with Time Conflict Detection & Degree Requirements**")
     st.markdown("---")
     
     # Initialize session state
@@ -436,16 +493,20 @@ def main():
     if st.session_state.step == 1:
         show_upload_step()
     
-    # Step 2: Review & Correct Max Classes
+    # Step 2: Set Course Levels (PG/UG)
     elif st.session_state.step == 2:
+        show_course_level_step()
+    
+    # Step 3: Review & Correct Max Classes
+    elif st.session_state.step == 3:
         show_review_step()
     
-    # Step 3: Analysis & Visualization
-    elif st.session_state.step == 3:
+    # Step 4: Analysis & Visualization
+    elif st.session_state.step == 4:
         show_analysis_step()
     
-    # Step 4: Run Optimization & Results
-    elif st.session_state.step == 4:
+    # Step 5: Run Optimization & Results
+    elif st.session_state.step == 5:
         show_optimization_step()
 
 
@@ -462,6 +523,7 @@ def show_upload_step():
         - Course codes in first column
         - Class details: Number, Type (TUT/LAB), Section, Mode, Status, Time, Tutor
         - Only TUT/LAB classes will be used (LEC ignored)
+        - **All courses default to PG (Postgraduate)**
         """)
         
         file1 = st.file_uploader(
@@ -474,9 +536,14 @@ def show_upload_step():
         st.subheader("👥 File 2: Tutor Preferences")
         st.markdown("""
         **Will extract:**
+        - Column BF (57): Degree (PhD/Master/Bachelor)
         - Column DE (108): T3 course preferences
-        - Column DG (109): Maximum classes per week
+        - Column DG (110): Maximum classes per week
         - Tutor names (First, Last, Preferred)
+        
+        **Degree Rules:**
+        - 🎓 PhD → Can teach both PG and UG courses
+        - 📚 Non-PhD → Can only teach UG courses
         """)
         
         file2 = st.file_uploader(
@@ -493,32 +560,62 @@ def show_upload_step():
                 st.session_state.classes_df = classes_df
                 
                 # Load tutors
-                tutors_df, preferences, max_classes, parsing_status = load_file2_tutors(file2)
+                tutors_df, preferences, max_classes, parsing_status, degrees = load_file2_tutors(file2)
                 st.session_state.tutors_df = tutors_df
                 st.session_state.preferences = preferences
                 st.session_state.max_classes = max_classes
                 st.session_state.parsing_status = parsing_status
+                st.session_state.degrees = degrees
                 
                 # Show preview
                 st.success("✅ Files loaded successfully!")
                 
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     st.metric("Classes Found (TUT/LAB)", len(classes_df))
-                    st.metric("Unique Courses", classes_df['course'].nunique())
-                
                 with col2:
+                    st.metric("Unique Courses", classes_df['course'].nunique())
+                with col3:
                     st.metric("Tutors with T3 Preferences", len(tutors_df))
-                    
+                
+                # Degree distribution
+                st.subheader("🎓 Tutor Degree Distribution")
+                degree_counts = {}
+                for degree in degrees.values():
+                    degree_upper = degree.upper()
+                    if 'PHD' in degree_upper or 'PH.D' in degree_upper or 'DOCTOR' in degree_upper:
+                        key = 'PhD'
+                    elif 'MASTER' in degree_upper or 'MSC' in degree_upper or 'MA' in degree_upper:
+                        key = 'Master'
+                    elif 'BACHELOR' in degree_upper or 'BSC' in degree_upper or 'BA' in degree_upper:
+                        key = 'Bachelor'
+                    else:
+                        key = 'Other/Not Specified'
+                    degree_counts[key] = degree_counts.get(key, 0) + 1
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("PhD Tutors", degree_counts.get('PhD', 0))
+                    st.caption("Can teach PG & UG")
+                with col2:
+                    st.metric("Master Tutors", degree_counts.get('Master', 0))
+                    st.caption("Can teach UG only")
+                with col3:
+                    st.metric("Bachelor Tutors", degree_counts.get('Bachelor', 0))
+                    st.caption("Can teach UG only")
+                with col4:
+                    st.metric("Other", degree_counts.get('Other/Not Specified', 0))
+                    st.caption("Can teach UG only")
+                
                 # Show preview
                 with st.expander("📋 Preview Classes Data"):
                     st.dataframe(classes_df.head(20), use_container_width=True)
                 
                 with st.expander("👥 Preview Tutors Data"):
-                    st.dataframe(tutors_df[['tutor_name', 't3_courses', 'max_classes', 'max_classes_status']].head(20), 
+                    st.dataframe(tutors_df[['tutor_name', 'degree', 't3_courses', 'max_classes', 'max_classes_status']].head(20), 
                                use_container_width=True)
                 
-                if st.button("Next: Review Max Classes →", type="primary"):
+                if st.button("Next: Set Course Levels (PG/UG) →", type="primary"):
                     st.session_state.step = 2
                     st.rerun()
                     
@@ -527,9 +624,89 @@ def show_upload_step():
                 st.exception(e)
 
 
+def show_course_level_step():
+    """Step 2: Set course levels (PG/UG)."""
+    st.header("Step 2: Set Course Levels (PG/UG)")
+    
+    classes_df = st.session_state.classes_df
+    
+    st.markdown("""
+    **All courses are set to PG (Postgraduate) by default.**  
+    Change any course to UG (Undergraduate) if needed.
+    
+    **Important:**
+    - 🎓 PhD tutors can teach **both PG and UG** courses
+    - 📚 Non-PhD tutors can **only teach UG** courses
+    """)
+    
+    st.markdown("---")
+    
+    # Get unique courses
+    unique_courses = sorted(classes_df['course'].unique())
+    
+    st.subheader("Set Course Levels")
+    
+    # Create a dictionary to store course levels
+    if 'course_levels' not in st.session_state:
+        st.session_state.course_levels = {course: 'PG' for course in unique_courses}
+    
+    # Display in columns for better layout
+    col1, col2 = st.columns(2)
+    
+    for idx, course in enumerate(unique_courses):
+        with col1 if idx % 2 == 0 else col2:
+            current_level = st.session_state.course_levels.get(course, 'PG')
+            new_level = st.radio(
+                f"**{course}**",
+                options=['PG', 'UG'],
+                index=0 if current_level == 'PG' else 1,
+                key=f"level_{course}",
+                horizontal=True
+            )
+            st.session_state.course_levels[course] = new_level
+            
+            # Show class count
+            num_classes = len(classes_df[classes_df['course'] == course])
+            st.caption(f"Classes: {num_classes}")
+            st.markdown("---")
+    
+    # Summary
+    st.subheader("📊 Summary")
+    pg_courses = [c for c, l in st.session_state.course_levels.items() if l == 'PG']
+    ug_courses = [c for c, l in st.session_state.course_levels.items() if l == 'UG']
+    
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("PG Courses", len(pg_courses))
+        if pg_courses:
+            st.caption(", ".join(pg_courses))
+    with col2:
+        st.metric("UG Courses", len(ug_courses))
+        if ug_courses:
+            st.caption(", ".join(ug_courses))
+    
+    st.markdown("---")
+    
+    # Navigation
+    col1, col2 = st.columns([1, 1])
+    
+    with col1:
+        if st.button("← Back to Upload"):
+            st.session_state.step = 1
+            st.rerun()
+    
+    with col2:
+        if st.button("Next: Review Max Classes →", type="primary"):
+            # Update classes_df with course levels
+            classes_df['course_level'] = classes_df['course'].map(st.session_state.course_levels)
+            st.session_state.classes_df = classes_df
+            st.session_state.step = 3
+            st.rerun()
+
+
 def show_review_step():
-    """Step 2: Review and correct max_classes values."""
-    st.header("Step 2: Review & Correct Max Classes")
+    """Step 3: Review and correct max_classes values."""
+    st.header("Step 3: Review & Correct Max Classes")
     
     tutors_df = st.session_state.tutors_df
     parsing_status = st.session_state.parsing_status
@@ -544,7 +721,7 @@ def show_review_step():
     """)
     
     # Create editable dataframe
-    edit_df = tutors_df[['tutor_name', 'max_classes', 'max_classes_status']].copy()
+    edit_df = tutors_df[['tutor_name', 'degree', 'max_classes', 'max_classes_status']].copy()
     
     # Show which ones need attention
     needs_review = edit_df[edit_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
@@ -562,28 +739,40 @@ def show_review_step():
     edited_data = []
     
     for idx, row in edit_df.iterrows():
-        col1, col2, col3, col4 = st.columns([3, 2, 3, 2])
+        col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 3, 2])
         
         with col1:
             st.text(row['tutor_name'])
         
         with col2:
-            status = row['max_classes_status']
-            if 'defaulted' in status.lower() or 'could not parse' in status.lower():
-                st.error("❌ Needs review")
-            elif 'range' in status.lower() or 'extracted' in status.lower():
-                st.warning("⚠️ Check value")
+            # Show degree with icon
+            degree = row['degree'].upper()
+            if 'PHD' in degree or 'PH.D' in degree or 'DOCTOR' in degree:
+                st.success("🎓 PhD")
+            elif 'MASTER' in degree:
+                st.info("📚 Master")
+            elif 'BACHELOR' in degree:
+                st.info("📖 Bachelor")
             else:
-                st.success("✅ OK")
+                st.warning("❓ " + row['degree'][:15])
         
         with col3:
-            st.text(status)
+            status = row['max_classes_status']
+            if 'defaulted' in status.lower() or 'could not parse' in status.lower():
+                st.error("❌")
+            elif 'range' in status.lower() or 'extracted' in status.lower():
+                st.warning("⚠️")
+            else:
+                st.success("✅")
         
         with col4:
+            st.caption(status)
+        
+        with col5:
             new_value = st.number_input(
                 "Max",
                 min_value=1,
-                max_value=50,  # Increased to handle edge cases
+                max_value=50,
                 value=int(row['max_classes']),
                 key=f"max_{idx}",
                 label_visibility="collapsed"
@@ -598,29 +787,30 @@ def show_review_step():
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col1:
-        if st.button("← Back to Upload"):
-            st.session_state.step = 1
+        if st.button("← Back to Course Levels"):
+            st.session_state.step = 2
             st.rerun()
     
     with col3:
         if st.button("Next: Analysis →", type="primary"):
             st.session_state.max_classes = new_max_classes
-            st.session_state.step = 3
+            st.session_state.step = 4
             st.rerun()
 
 
 def show_analysis_step():
-    """Step 3: Show data analysis and visualizations."""
-    st.header("Step 3: Data Analysis")
+    """Step 4: Show data analysis and visualizations."""
+    st.header("Step 4: Data Analysis")
     
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
+    degrees = st.session_state.degrees
     
     # Summary metrics
     st.subheader("📊 Overview")
-    col1, col2, col3, col4 = st.columns(4)
+    col1, col2, col3, col4, col5 = st.columns(5)
     
     with col1:
         st.metric("Total Classes", len(classes_df))
@@ -631,6 +821,9 @@ def show_analysis_step():
     with col4:
         total_capacity = sum(max_classes.values())
         st.metric("Total Tutor Capacity", total_capacity)
+    with col5:
+        phd_count = sum(1 for d in degrees.values() if 'PHD' in d.upper() or 'PH.D' in d.upper() or 'DOCTOR' in d.upper())
+        st.metric("PhD Tutors", phd_count)
     
     # Check feasibility
     if total_capacity < len(classes_df):
@@ -641,70 +834,82 @@ def show_analysis_step():
     
     st.markdown("---")
     
+    # Course level distribution
+    st.subheader("📚 Course Level Distribution")
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        level_counts = classes_df.groupby('course_level').agg({
+            'course': 'nunique',
+            'class_id': 'count'
+        }).reset_index()
+        level_counts.columns = ['Level', 'Unique Courses', 'Total Classes']
+        
+        st.dataframe(level_counts, use_container_width=True, hide_index=True)
+    
+    with col2:
+        fig_level = px.pie(
+            classes_df,
+            names='course_level',
+            title='Classes by Level',
+            color='course_level',
+            color_discrete_map={'PG': '#FF6B6B', 'UG': '#4ECDC4'}
+        )
+        st.plotly_chart(fig_level, use_container_width=True)
+    
     # Classes per course
-    st.subheader("📚 Classes per Course")
-    course_counts = classes_df.groupby('course').size().reset_index(name='count')
-    course_counts = course_counts.sort_values('count', ascending=False)
+    st.subheader("📊 Classes per Course")
+    course_details = classes_df.groupby(['course', 'course_level']).size().reset_index(name='count')
+    course_details = course_details.sort_values('count', ascending=False)
     
     fig_courses = px.bar(
-        course_counts,
+        course_details,
         x='course',
         y='count',
+        color='course_level',
         title='Number of Classes (TUT/LAB) per Course',
-        labels={'course': 'Course', 'count': 'Number of Classes'},
-        color='count',
-        color_continuous_scale='Blues'
+        labels={'course': 'Course', 'count': 'Number of Classes', 'course_level': 'Level'},
+        color_discrete_map={'PG': '#FF6B6B', 'UG': '#4ECDC4'}
     )
-    fig_courses.update_layout(height=400, showlegend=False)
+    fig_courses.update_layout(height=400)
     st.plotly_chart(fig_courses, use_container_width=True)
     
-    # Build preference matrix
-    st.subheader("🎯 Tutor-Course Preference Matrix")
-    
-    courses = sorted(classes_df['course'].unique())
-    tutors = sorted(tutors_df['tutor_name'].unique())
-    
-    pref_matrix = pd.DataFrame(0, index=tutors, columns=courses)
-    
-    for tutor in tutors:
-        tutor_courses = preferences.get(tutor, [])
-        for course in tutor_courses:
-            if course in pref_matrix.columns:
-                pref_matrix.loc[tutor, course] = 10
-    
-    fig_pref = px.imshow(
-        pref_matrix.values,
-        labels=dict(x="Course", y="Tutor", color="Preference"),
-        x=pref_matrix.columns.tolist(),
-        y=pref_matrix.index.tolist(),
-        color_continuous_scale="RdYlGn",
-        title="Tutor Preferences for Courses (10 = Preferred, 0 = Not Preferred)",
-        aspect="auto"
-    )
-    fig_pref.update_layout(
-        height=max(600, len(tutors) * 15),
-        xaxis=dict(tickangle=90),
-        yaxis=dict(tickfont=dict(size=9))
-    )
-    st.plotly_chart(fig_pref, use_container_width=True)
-    
-    # Course coverage analysis
-    st.subheader("📋 Course Coverage Analysis")
+    # Course coverage analysis with degree constraints
+    st.subheader("📋 Course Coverage Analysis (with Degree Requirements)")
     
     coverage_data = []
+    courses = sorted(classes_df['course'].unique())
+    
     for course in courses:
-        num_classes = len(classes_df[classes_df['course'] == course])
-        num_tutors = (pref_matrix[course] > 0).sum()
-        total_capacity_for_course = sum([
-            max_classes.get(tutor, 0) 
-            for tutor in tutors 
-            if pref_matrix.loc[tutor, course] > 0
-        ])
+        course_df = classes_df[classes_df['course'] == course]
+        num_classes = len(course_df)
+        course_level = course_df.iloc[0]['course_level']
+        
+        # Count qualified tutors based on degree requirements
+        if course_level == 'PG':
+            # Only PhD tutors can teach PG
+            qualified_tutors = [
+                tutor for tutor in tutors_df['tutor_name'].unique()
+                if course in preferences.get(tutor, []) and
+                ('PHD' in degrees.get(tutor, '').upper() or 
+                 'PH.D' in degrees.get(tutor, '').upper() or
+                 'DOCTOR' in degrees.get(tutor, '').upper())
+            ]
+        else:  # UG
+            # All tutors can teach UG
+            qualified_tutors = [
+                tutor for tutor in tutors_df['tutor_name'].unique()
+                if course in preferences.get(tutor, [])
+            ]
+        
+        num_qualified = len(qualified_tutors)
+        total_capacity_for_course = sum([max_classes.get(tutor, 0) for tutor in qualified_tutors])
         
         coverage_data.append({
             'Course': course,
+            'Level': course_level,
             'Classes': num_classes,
-            'Qualified Tutors': num_tutors,
+            'Qualified Tutors': num_qualified,
             'Tutor Capacity': total_capacity_for_course,
             'Ratio': f"{total_capacity_for_course / num_classes:.2f}x" if num_classes > 0 else "N/A",
             'Status': '✅' if total_capacity_for_course >= num_classes else '⚠️'
@@ -716,8 +921,15 @@ def show_analysis_step():
     # Highlight problematic courses
     problematic = coverage_df[coverage_df['Status'] == '⚠️']
     if len(problematic) > 0:
-        st.warning(f"⚠️ {len(problematic)} course(s) have insufficient tutor capacity:")
+        st.warning(f"⚠️ {len(problematic)} course(s) have insufficient qualified tutor capacity:")
         st.dataframe(problematic, use_container_width=True, hide_index=True)
+        
+        # Provide specific reasons
+        for idx, row in problematic.iterrows():
+            if row['Level'] == 'PG' and row['Qualified Tutors'] == 0:
+                st.error(f"**{row['Course']}**: No PhD tutors available who prefer this course!")
+            elif row['Qualified Tutors'] == 0:
+                st.error(f"**{row['Course']}**: No tutors have expressed preference for this course!")
     
     st.markdown("---")
     
@@ -725,23 +937,24 @@ def show_analysis_step():
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("← Back to Review"):
-            st.session_state.step = 2
+            st.session_state.step = 3
             st.rerun()
     
     with col2:
         if st.button("Run Optimization →", type="primary"):
-            st.session_state.step = 4
+            st.session_state.step = 5
             st.rerun()
 
 
 def show_optimization_step():
-    """Step 4: Run optimization and show results."""
-    st.header("Step 4: Optimization Results")
+    """Step 5: Run optimization and show results."""
+    st.header("Step 5: Optimization Results")
     
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
+    degrees = st.session_state.degrees
     
     # Build preference dictionary for LP
     pref_dict = {}
@@ -749,14 +962,15 @@ def show_optimization_step():
         for course in courses:
             pref_dict[(tutor, course)] = 10  # All preferences = 10
     
-    with st.spinner("🔄 Running Linear Programming optimization..."):
+    with st.spinner("🔄 Running Linear Programming optimization with degree constraints..."):
         try:
             # Create and solve LP
             lp = TutorAssignmentLP(
                 classes_df=classes_df,
                 tutors_df=tutors_df,
                 preferences=pref_dict,
-                tutor_max_classes=max_classes
+                tutor_max_classes=max_classes,
+                tutor_degrees=degrees
             )
             
             solution = lp.solve()
@@ -764,12 +978,14 @@ def show_optimization_step():
             # Display results
             col1, col2, col3 = st.columns(3)
             with col1:
+                status_color = "normal" if solution['status'] == 'Optimal' else "off"
                 st.metric("Status", solution['status'])
             with col2:
                 if solution['objective_value']:
                     st.metric("Objective Value", f"{solution['objective_value']:.0f}")
             with col3:
-                st.metric("Unassigned Classes", len(solution['unassigned_classes']))
+                unassigned_count = len(solution['unassigned_classes'])
+                st.metric("Unassigned Classes", unassigned_count)
             
             if solution['status'] == 'Optimal':
                 st.success("✅ Optimization completed successfully!")
@@ -781,13 +997,18 @@ def show_optimization_step():
                     class_id = row['class_id']
                     assigned_tutor = solution['assignments'].get((course, class_id), 'UNASSIGNED')
                     
+                    # Get tutor degree if assigned
+                    tutor_degree = degrees.get(assigned_tutor, 'N/A') if assigned_tutor != 'UNASSIGNED' else 'N/A'
+                    
                     results_data.append({
                         'Course': course,
+                        'Level': row['course_level'],
                         'Class ID': class_id,
                         'Type': row['type'],
                         'Section': row['section'],
                         'Time': row['time'],
-                        'Assigned Tutor': assigned_tutor
+                        'Assigned Tutor': assigned_tutor,
+                        'Tutor Degree': tutor_degree
                     })
                 
                 results_df = pd.DataFrame(results_data)
@@ -796,7 +1017,7 @@ def show_optimization_step():
                 st.subheader("📋 Class Assignments")
                 
                 # Filter options
-                col1, col2 = st.columns(2)
+                col1, col2, col3 = st.columns(3)
                 with col1:
                     filter_course = st.selectbox(
                         "Filter by Course:",
@@ -807,12 +1028,19 @@ def show_optimization_step():
                         "Filter by Tutor:",
                         options=['All'] + sorted([t for t in tutors_df['tutor_name'].unique()])
                     )
+                with col3:
+                    filter_level = st.selectbox(
+                        "Filter by Level:",
+                        options=['All', 'PG', 'UG']
+                    )
                 
                 display_df = results_df.copy()
                 if filter_course != 'All':
                     display_df = display_df[display_df['Course'] == filter_course]
                 if filter_tutor != 'All':
                     display_df = display_df[display_df['Assigned Tutor'] == filter_tutor]
+                if filter_level != 'All':
+                    display_df = display_df[display_df['Level'] == filter_level]
                 
                 st.dataframe(display_df, use_container_width=True, hide_index=True)
                 
@@ -824,15 +1052,32 @@ def show_optimization_step():
                     load = solution['tutor_loads'][tutor]
                     assigned_classes = load['classes']
                     
-                    # Group by course
+                    # Group by course and level
                     courses_count = {}
+                    pg_count = 0
+                    ug_count = 0
+                    
                     for course, class_id in assigned_classes:
                         courses_count[course] = courses_count.get(course, 0) + 1
+                        # Get level
+                        class_level = classes_df[
+                            (classes_df['course'] == course) & 
+                            (classes_df['class_id'] == class_id)
+                        ].iloc[0]['course_level']
+                        if class_level == 'PG':
+                            pg_count += 1
+                        else:
+                            ug_count += 1
                     
                     courses_str = ', '.join([f"{course}({count})" for course, count in courses_count.items()])
                     
+                    tutor_degree = degrees.get(tutor, 'Not Specified')
+                    
                     workload_data.append({
                         'Tutor': tutor,
+                        'Degree': tutor_degree,
+                        'PG Classes': pg_count,
+                        'UG Classes': ug_count,
                         'Total Classes': load['total'],
                         'Max Allowed': max_classes.get(tutor, 0),
                         'Utilization': f"{load['total']}/{max_classes.get(tutor, 0)}",
@@ -845,14 +1090,14 @@ def show_optimization_step():
                 
                 # Visualization
                 fig_workload = px.bar(
-                    workload_df,
+                    workload_df[workload_df['Total Classes'] > 0],
                     x='Tutor',
-                    y='Total Classes',
-                    title='Tutor Workload Distribution',
-                    color='Total Classes',
-                    color_continuous_scale='Blues'
+                    y=['PG Classes', 'UG Classes'],
+                    title='Tutor Workload Distribution by Course Level',
+                    labels={'value': 'Number of Classes', 'variable': 'Level'},
+                    color_discrete_map={'PG Classes': '#FF6B6B', 'UG Classes': '#4ECDC4'}
                 )
-                fig_workload.update_layout(height=400, showlegend=False, xaxis_tickangle=45)
+                fig_workload.update_layout(height=400, xaxis_tickangle=45)
                 st.plotly_chart(fig_workload, use_container_width=True)
                 
                 # Unassigned classes
@@ -867,16 +1112,36 @@ def show_optimization_step():
                             (classes_df['class_id'] == class_id)
                         ].iloc[0]
                         
+                        course_level = class_row['course_level']
+                        
                         # Find why it couldn't be assigned
-                        qualified_tutors = [t for t, courses in preferences.items() if course in courses]
+                        if course_level == 'PG':
+                            qualified_tutors = [
+                                t for t, courses_pref in preferences.items() 
+                                if course in courses_pref and
+                                ('PHD' in degrees.get(t, '').upper() or 
+                                 'PH.D' in degrees.get(t, '').upper() or
+                                 'DOCTOR' in degrees.get(t, '').upper())
+                            ]
+                        else:
+                            qualified_tutors = [t for t, courses_pref in preferences.items() if course in courses_pref]
+                        
+                        if len(qualified_tutors) == 0:
+                            if course_level == 'PG':
+                                reason = "No PhD tutors with preference for this course"
+                            else:
+                                reason = "No tutors with preference for this course"
+                        else:
+                            reason = "Time conflict or capacity exceeded"
                         
                         unassigned_data.append({
                             'Course': course,
+                            'Level': course_level,
                             'Class ID': class_id,
                             'Section': class_row['section'],
                             'Time': class_row['time'],
                             'Qualified Tutors': len(qualified_tutors),
-                            'Possible Reason': 'Time conflict or capacity exceeded'
+                            'Possible Reason': reason
                         })
                     
                     unassigned_df = pd.DataFrame(unassigned_data)
@@ -899,7 +1164,7 @@ def show_optimization_step():
                 st.download_button(
                     label="📥 Download Results (Excel)",
                     data=output.getvalue(),
-                    file_name="tutor_assignments_T3.xlsx",
+                    file_name="tutor_assignments_T3_with_degrees.xlsx",
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                 )
                 
@@ -908,7 +1173,8 @@ def show_optimization_step():
                 st.write("Possible reasons:")
                 st.write("- Insufficient tutor capacity")
                 st.write("- Too many time conflicts")
-                st.write("- No qualified tutors for some courses")
+                st.write("- No qualified tutors for some courses (check degree requirements)")
+                st.write("- PG courses may need PhD tutors")
             
         except Exception as e:
             st.error(f"❌ Error during optimization: {str(e)}")
@@ -918,7 +1184,7 @@ def show_optimization_step():
     col1, col2 = st.columns([1, 1])
     with col1:
         if st.button("← Back to Analysis"):
-            st.session_state.step = 3
+            st.session_state.step = 4
             st.rerun()
     
     with col2:
