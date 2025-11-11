@@ -863,7 +863,7 @@ def show_review_tutors_step():
     # Summary of workload warnings
     st.subheader("⚠️ Workload Summary")
     
-    high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 5)
+    high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 4)
     if high_load_count > 0:
         st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 4:")
         high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 4]
