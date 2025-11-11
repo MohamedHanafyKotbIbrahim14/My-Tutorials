@@ -283,6 +283,23 @@ def extract_degree(text: str) -> str:
     return str(text).strip()
 
 
+def normalize_degree(degree_text: str) -> str:
+    """
+    Normalize degree text to standard categories.
+    Returns: 'PhD', 'Master', 'Bachelor', or 'Other'
+    """
+    degree_upper = degree_text.upper()
+    
+    if 'PHD' in degree_upper or 'PH.D' in degree_upper or 'DOCTOR' in degree_upper or 'PH D' in degree_upper:
+        return 'PhD'
+    elif 'MASTER' in degree_upper or 'MSC' in degree_upper or 'MA' in degree_upper or 'M.SC' in degree_upper or 'M.A' in degree_upper:
+        return 'Master'
+    elif 'BACHELOR' in degree_upper or 'BSC' in degree_upper or 'BA' in degree_upper or 'B.SC' in degree_upper or 'B.A' in degree_upper:
+        return 'Bachelor'
+    else:
+        return 'Other'
+
+
 def parse_max_classes(value) -> Tuple[int, str]:
     """
     Parse max_classes value from various formats.
@@ -497,9 +514,9 @@ def main():
     elif st.session_state.step == 2:
         show_course_level_step()
     
-    # Step 3: Review & Correct Max Classes
+    # Step 3: Review Tutors (Degrees & Max Classes)
     elif st.session_state.step == 3:
-        show_review_step()
+        show_review_tutors_step()
     
     # Step 4: Analysis & Visualization
     elif st.session_state.step == 4:
@@ -582,16 +599,8 @@ def show_upload_step():
                 st.subheader("🎓 Tutor Degree Distribution")
                 degree_counts = {}
                 for degree in degrees.values():
-                    degree_upper = degree.upper()
-                    if 'PHD' in degree_upper or 'PH.D' in degree_upper or 'DOCTOR' in degree_upper:
-                        key = 'PhD'
-                    elif 'MASTER' in degree_upper or 'MSC' in degree_upper or 'MA' in degree_upper:
-                        key = 'Master'
-                    elif 'BACHELOR' in degree_upper or 'BSC' in degree_upper or 'BA' in degree_upper:
-                        key = 'Bachelor'
-                    else:
-                        key = 'Other/Not Specified'
-                    degree_counts[key] = degree_counts.get(key, 0) + 1
+                    normalized = normalize_degree(degree)
+                    degree_counts[normalized] = degree_counts.get(normalized, 0) + 1
                 
                 col1, col2, col3, col4 = st.columns(4)
                 with col1:
@@ -604,7 +613,7 @@ def show_upload_step():
                     st.metric("Bachelor Tutors", degree_counts.get('Bachelor', 0))
                     st.caption("Can teach UG only")
                 with col4:
-                    st.metric("Other", degree_counts.get('Other/Not Specified', 0))
+                    st.metric("Other", degree_counts.get('Other', 0))
                     st.caption("Can teach UG only")
                 
                 # Show preview
@@ -696,7 +705,7 @@ def show_course_level_step():
             st.rerun()
     
     with col2:
-        if st.button("Next: Review Max Classes →", type="primary"):
+        if st.button("Next: Review Tutors →", type="primary"):
             # Update classes_df with course levels
             classes_df['course_level'] = classes_df['course'].map(st.session_state.course_levels)
             st.session_state.classes_df = classes_df
@@ -704,86 +713,127 @@ def show_course_level_step():
             st.rerun()
 
 
-def show_review_step():
-    """Step 3: Review and correct max_classes values."""
-    st.header("Step 3: Review & Correct Max Classes")
+def show_review_tutors_step():
+    """Step 3: Review and edit tutor information (degrees and max classes)."""
+    st.header("Step 3: Review & Edit Tutor Information")
     
     tutors_df = st.session_state.tutors_df
     parsing_status = st.session_state.parsing_status
+    degrees = st.session_state.degrees
     
     st.markdown("""
-    **Review the parsed 'Maximum Classes' values below.**  
-    - ✅ Green = Successfully parsed
-    - ⚠️ Yellow = Parsed with assumptions (review recommended)
-    - ❌ Red = Failed to parse (defaulted to 3)
+    **Review and edit tutor information below:**
+    - 🎓 **Education Level**: PhD tutors can teach PG & UG; Non-PhD can only teach UG
+    - 📊 **Max Classes**: Maximum number of classes per tutor
     
-    You can edit any value in the table below.
+    Edit any values as needed.
     """)
     
-    # Create editable dataframe
-    edit_df = tutors_df[['tutor_name', 'degree', 'max_classes', 'max_classes_status']].copy()
+    st.markdown("---")
     
-    # Show which ones need attention
-    needs_review = edit_df[edit_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
+    # Check for issues
+    needs_review_max = tutors_df[tutors_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
     
-    if len(needs_review) > 0:
-        st.warning(f"⚠️ {len(needs_review)} tutor(s) have values that may need correction (highlighted below)")
+    if len(needs_review_max) > 0:
+        st.warning(f"⚠️ {len(needs_review_max)} tutor(s) have max_classes values that may need correction")
     else:
         st.success("✅ All max_classes values parsed successfully!")
     
     st.markdown("---")
     
-    # Show editable table
-    st.subheader("Edit Maximum Classes")
+    # Editable table
+    st.subheader("Edit Tutor Information")
     
-    edited_data = []
+    edited_degrees = {}
+    edited_max_classes = {}
     
-    for idx, row in edit_df.iterrows():
-        col1, col2, col3, col4, col5 = st.columns([3, 2, 1, 3, 2])
-        
-        with col1:
-            st.text(row['tutor_name'])
-        
-        with col2:
-            # Show degree with icon
-            degree = row['degree'].upper()
-            if 'PHD' in degree or 'PH.D' in degree or 'DOCTOR' in degree:
-                st.success("🎓 PhD")
-            elif 'MASTER' in degree:
-                st.info("📚 Master")
-            elif 'BACHELOR' in degree:
-                st.info("📖 Bachelor")
-            else:
-                st.warning("❓ " + row['degree'][:15])
-        
-        with col3:
-            status = row['max_classes_status']
-            if 'defaulted' in status.lower() or 'could not parse' in status.lower():
-                st.error("❌")
-            elif 'range' in status.lower() or 'extracted' in status.lower():
-                st.warning("⚠️")
-            else:
-                st.success("✅")
-        
-        with col4:
-            st.caption(status)
-        
-        with col5:
-            new_value = st.number_input(
-                "Max",
-                min_value=1,
-                max_value=50,
-                value=int(row['max_classes']),
-                key=f"max_{idx}",
-                label_visibility="collapsed"
-            )
-            edited_data.append((row['tutor_name'], new_value))
+    # Create scrollable container
+    for idx, row in tutors_df.iterrows():
+        with st.container():
+            col1, col2, col3, col4, col5 = st.columns([3, 2, 2, 3, 1])
+            
+            with col1:
+                st.markdown(f"**{row['tutor_name']}**")
+                st.caption(f"Preferences: {row['t3_courses'][:50]}...")
+            
+            with col2:
+                # Degree dropdown
+                current_degree = degrees.get(row['tutor_name'], 'Other')
+                normalized_degree = normalize_degree(current_degree)
+                
+                degree_options = ['PhD', 'Master', 'Bachelor', 'Other']
+                default_idx = degree_options.index(normalized_degree) if normalized_degree in degree_options else 3
+                
+                new_degree = st.selectbox(
+                    "Education",
+                    options=degree_options,
+                    index=default_idx,
+                    key=f"degree_{idx}",
+                    label_visibility="collapsed"
+                )
+                
+                # Show teaching eligibility
+                if new_degree == 'PhD':
+                    st.caption("✅ Can teach PG & UG")
+                else:
+                    st.caption("⚠️ Can teach UG only")
+                
+                edited_degrees[row['tutor_name']] = new_degree
+            
+            with col3:
+                # Show original degree text
+                original_text = row['degree'][:30] + "..." if len(row['degree']) > 30 else row['degree']
+                st.caption(f"Original: {original_text}")
+            
+            with col4:
+                # Max classes input
+                status = row['max_classes_status']
+                
+                # Status indicator
+                if 'defaulted' in status.lower() or 'could not parse' in status.lower():
+                    st.caption("❌ " + status[:40])
+                elif 'range' in status.lower() or 'extracted' in status.lower():
+                    st.caption("⚠️ " + status[:40])
+                else:
+                    st.caption("✅ " + status[:40])
+            
+            with col5:
+                new_max = st.number_input(
+                    "Max",
+                    min_value=1,
+                    max_value=50,
+                    value=int(row['max_classes']),
+                    key=f"max_{idx}",
+                    label_visibility="collapsed"
+                )
+                edited_max_classes[row['tutor_name']] = new_max
+            
+            st.markdown("---")
+    
+    # Summary of changes
+    st.subheader("📊 Summary of Education Levels")
+    
+    degree_summary = {}
+    for degree in edited_degrees.values():
+        degree_summary[degree] = degree_summary.get(degree, 0) + 1
+    
+    col1, col2, col3, col4 = st.columns(4)
+    with col1:
+        st.metric("PhD", degree_summary.get('PhD', 0))
+        st.caption("Can teach PG & UG")
+    with col2:
+        st.metric("Master", degree_summary.get('Master', 0))
+        st.caption("Can teach UG only")
+    with col3:
+        st.metric("Bachelor", degree_summary.get('Bachelor', 0))
+        st.caption("Can teach UG only")
+    with col4:
+        st.metric("Other", degree_summary.get('Other', 0))
+        st.caption("Can teach UG only")
     
     st.markdown("---")
     
-    # Update session state with edited values
-    new_max_classes = {tutor: val for tutor, val in edited_data}
-    
+    # Navigation
     col1, col2, col3 = st.columns([1, 2, 1])
     
     with col1:
@@ -793,7 +843,9 @@ def show_review_step():
     
     with col3:
         if st.button("Next: Analysis →", type="primary"):
-            st.session_state.max_classes = new_max_classes
+            # Update session state with edited values
+            st.session_state.degrees = edited_degrees
+            st.session_state.max_classes = edited_max_classes
             st.session_state.step = 4
             st.rerun()
 
@@ -822,7 +874,7 @@ def show_analysis_step():
         total_capacity = sum(max_classes.values())
         st.metric("Total Tutor Capacity", total_capacity)
     with col5:
-        phd_count = sum(1 for d in degrees.values() if 'PHD' in d.upper() or 'PH.D' in d.upper() or 'DOCTOR' in d.upper())
+        phd_count = sum(1 for d in degrees.values() if d == 'PhD')
         st.metric("PhD Tutors", phd_count)
     
     # Check feasibility
@@ -890,10 +942,7 @@ def show_analysis_step():
             # Only PhD tutors can teach PG
             qualified_tutors = [
                 tutor for tutor in tutors_df['tutor_name'].unique()
-                if course in preferences.get(tutor, []) and
-                ('PHD' in degrees.get(tutor, '').upper() or 
-                 'PH.D' in degrees.get(tutor, '').upper() or
-                 'DOCTOR' in degrees.get(tutor, '').upper())
+                if course in preferences.get(tutor, []) and degrees.get(tutor, '') == 'PhD'
             ]
         else:  # UG
             # All tutors can teach UG
@@ -936,7 +985,7 @@ def show_analysis_step():
     # Navigation
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("← Back to Review"):
+        if st.button("← Back to Review Tutors"):
             st.session_state.step = 3
             st.rerun()
     
@@ -978,7 +1027,6 @@ def show_optimization_step():
             # Display results
             col1, col2, col3 = st.columns(3)
             with col1:
-                status_color = "normal" if solution['status'] == 'Optimal' else "off"
                 st.metric("Status", solution['status'])
             with col2:
                 if solution['objective_value']:
@@ -1118,10 +1166,7 @@ def show_optimization_step():
                         if course_level == 'PG':
                             qualified_tutors = [
                                 t for t, courses_pref in preferences.items() 
-                                if course in courses_pref and
-                                ('PHD' in degrees.get(t, '').upper() or 
-                                 'PH.D' in degrees.get(t, '').upper() or
-                                 'DOCTOR' in degrees.get(t, '').upper())
+                                if course in courses_pref and degrees.get(t, '') == 'PhD'
                             ]
                         else:
                             qualified_tutors = [t for t, courses_pref in preferences.items() if course in courses_pref]
