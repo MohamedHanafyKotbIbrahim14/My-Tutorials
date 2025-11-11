@@ -708,17 +708,22 @@ def show_review_tutors_step():
     - 🟢 **Green (✅)**: Information is clear and valid
     - 🟡 **Yellow (⚠️)**: Information needs attention
     - 🔴 **Red (❌)**: No information provided
+    - 🟠 **Orange (⚠️ Check Load)**: Max classes > 5, verify if this workload is appropriate
     """)
     
     st.markdown("---")
     
     # Check for issues
     needs_review_max = tutors_df[tutors_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
+    high_load_tutors = tutors_df[tutors_df['max_classes'] > 5]
     
     if len(needs_review_max) > 0:
         st.warning(f"⚠️ {len(needs_review_max)} tutor(s) have max_classes values that may need correction")
     else:
         st.success("✅ All max_classes values parsed successfully!")
+    
+    if len(high_load_tutors) > 0:
+        st.warning(f"🟠 {len(high_load_tutors)} tutor(s) have max classes > 5 - please verify these workloads are appropriate")
     
     st.markdown("---")
     
@@ -807,8 +812,13 @@ def show_review_tutors_step():
         with col4:
             # Max classes status with color coding
             status = row['max_classes_status']
+            current_max_value = int(row['max_classes'])
             
-            if 'defaulted' in status.lower() or 'could not parse' in status.lower():
+            # Check if max classes > 5
+            if current_max_value > 5:
+                st.warning(f"🟠 Check Load: {current_max_value} classes")
+                st.caption(f"Original: {status[:30]}")
+            elif 'defaulted' in status.lower() or 'could not parse' in status.lower():
                 st.error(f"❌ {status[:50]}")
             elif 'range' in status.lower() or 'extracted' in status.lower():
                 st.warning(f"⚠️ {status[:50]}")
@@ -825,6 +835,10 @@ def show_review_tutors_step():
                 label_visibility="collapsed"
             )
             edited_max_classes[row['tutor_name']] = new_max
+            
+            # Show warning icon if > 5
+            if new_max > 5:
+                st.caption("⚠️ High")
         
         st.markdown("---")
     
@@ -845,6 +859,20 @@ def show_review_tutors_step():
     with col3:
         st.metric("Bachelor", degree_summary.get('Bachelor', 0))
         st.caption("Can teach UG only")
+    
+    # Summary of workload warnings
+    st.subheader("⚠️ Workload Summary")
+    
+    high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 5)
+    if high_load_count > 0:
+        st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 5:")
+        high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 5]
+        high_load_list.sort(key=lambda x: x[1], reverse=True)
+        
+        for name, max_val in high_load_list:
+            st.write(f"- **{name}**: {max_val} classes")
+    else:
+        st.success("✅ All tutors have reasonable workloads (≤ 5 classes)")
     
     st.markdown("---")
     
