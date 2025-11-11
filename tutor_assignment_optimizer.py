@@ -17,7 +17,8 @@ class TutorAssignmentLP:
                  tutor_max_classes: Dict[str, int],
                  tutor_degrees: Dict[str, str],
                  course_diversity_penalty: float = 5.0,
-                 phd_priority_bonus: float = 2.0):
+                 phd_priority_bonus: float = 2.0,
+                 master_priority_bonus: float = 1.0):
         """
         Initialize the LP problem.
         """
@@ -28,6 +29,7 @@ class TutorAssignmentLP:
         self.tutor_degrees = tutor_degrees
         self.course_diversity_penalty = course_diversity_penalty
         self.phd_priority_bonus = phd_priority_bonus
+        self.master_priority_bonus = master_priority_bonus
         
         self.tutors = list(tutors_df['tutor_name'].unique())
         self.courses = list(classes_df['course'].unique())
@@ -149,10 +151,18 @@ class TutorAssignmentLP:
             for (tutor, course, class_id) in self.x_vars.keys()
         ])
         
+        # PhD bonus (highest priority)
         phd_bonus_term = self.phd_priority_bonus * pulp.lpSum([
             self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
             if self.tutor_degrees.get(tutor, '') == 'PhD'
+        ])
+        
+        # Master bonus (medium priority)
+        master_bonus_term = self.master_priority_bonus * pulp.lpSum([
+            self.x_vars[(tutor, course, class_id)]
+            for (tutor, course, class_id) in self.x_vars.keys()
+            if self.tutor_degrees.get(tutor, '') == 'Master'
         ])
         
         diversity_penalty_term = self.course_diversity_penalty * pulp.lpSum([
@@ -160,7 +170,7 @@ class TutorAssignmentLP:
             for (tutor, course) in self.y_vars.keys()
         ])
         
-        self.model += preference_term + phd_bonus_term - diversity_penalty_term
+        self.model += preference_term + phd_bonus_term + master_bonus_term - diversity_penalty_term
         
         self._add_constraints()
     
@@ -733,7 +743,6 @@ def show_review_tutors_step():
         
         with col1:
             st.markdown(f"**{row['tutor_name']}**")
-    
         
         with col2:
             # Show original degree text with color-coded status
@@ -1001,7 +1010,8 @@ def show_optimization_step():
     with st.form("optimization_form"):
         st.subheader("⚙️ Optimization Parameters")
         
-        col1, col2 = st.columns(2)
+        col1, col2, col3 = st.columns(3)
+        
         with col1:
             course_diversity_penalty = st.slider(
                 "Course Diversity Penalty",
@@ -1015,9 +1025,9 @@ def show_optimization_step():
             st.info(f"""
             **Current Setting: {course_diversity_penalty}**
             
-            - **0**: No penalty (tutors can teach many courses)
-            - **5**: Moderate penalty (recommended)
-            - **10+**: Strong penalty (tutors prefer 1-2 courses only)
+            - **0**: No penalty
+            - **5**: Moderate (recommended)
+            - **10+**: Strong penalty
             """)
         
         with col2:
@@ -1033,11 +1043,31 @@ def show_optimization_step():
             st.success(f"""
             **Current Setting: {phd_priority_bonus}**
             
-            - **0**: No priority for PhD students
-            - **2**: Moderate priority (recommended)
-            - **5+**: Strong priority for PhD students
+            - **0**: No priority
+            - **2**: Moderate (recommended)
+            - **5+**: Strong priority
             
-            🎓 PhD students will be assigned first!
+            🎓 **Priority: PhD > Master > Bachelor**
+            """)
+        
+        with col3:
+            master_priority_bonus = st.slider(
+                "Master Priority Bonus",
+                min_value=0.0,
+                max_value=5.0,
+                value=1.0,
+                step=0.5,
+                help="Higher bonus gives more priority to Master students (should be less than PhD bonus)"
+            )
+            
+            st.info(f"""
+            **Current Setting: {master_priority_bonus}**
+            
+            - **0**: No priority
+            - **1**: Moderate (recommended)
+            - **2+**: Strong priority
+            
+            📚 **Master students get medium priority**
             """)
         
         time_limit = st.slider(
@@ -1083,7 +1113,8 @@ def show_optimization_step():
                     tutor_max_classes=max_classes,
                     tutor_degrees=degrees,
                     course_diversity_penalty=course_diversity_penalty,
-                    phd_priority_bonus=phd_priority_bonus
+                    phd_priority_bonus=phd_priority_bonus,
+                    master_priority_bonus=master_priority_bonus
                 )
                 
                 status_text.text("Building model...")
@@ -1234,29 +1265,49 @@ def show_optimization_step():
             workload_df = workload_df.sort_values('Total Classes', ascending=False)
             st.dataframe(workload_df, use_container_width=True, hide_index=True)
             
-            # PhD Priority Analysis
-            st.subheader("🎓 PhD Priority Analysis")
-            phd_tutors = workload_df[workload_df['Degree'] == 'PhD']
+            # Degree Priority Analysis
+            st.subheader("🎓 Degree Priority Analysis")
             
             col1, col2, col3 = st.columns(3)
+            
+            # PhD Analysis
             with col1:
+                st.markdown("**PhD Priority (Highest)**")
+                phd_tutors = workload_df[workload_df['Degree'] == 'PhD']
                 phd_assigned = phd_tutors[phd_tutors['Total Classes'] > 0].shape[0]
                 phd_total = len(phd_tutors)
                 st.metric("PhD Tutors Assigned", f"{phd_assigned}/{phd_total}")
                 if phd_total > 0:
                     st.caption(f"{phd_assigned/phd_total*100:.0f}% utilization")
-            
-            with col2:
+                
                 phd_classes = phd_tutors['Total Classes'].sum()
-                total_assigned = workload_df['Total Classes'].sum()
-                st.metric("Classes Taught by PhD", phd_classes)
-                if total_assigned > 0:
-                    st.caption(f"{phd_classes/total_assigned*100:.0f}% of all classes")
+                st.metric("Classes by PhD", phd_classes)
             
+            # Master Analysis
+            with col2:
+                st.markdown("**Master Priority (Medium)**")
+                master_tutors = workload_df[workload_df['Degree'] == 'Master']
+                master_assigned = master_tutors[master_tutors['Total Classes'] > 0].shape[0]
+                master_total = len(master_tutors)
+                st.metric("Master Tutors Assigned", f"{master_assigned}/{master_total}")
+                if master_total > 0:
+                    st.caption(f"{master_assigned/master_total*100:.0f}% utilization")
+                
+                master_classes = master_tutors['Total Classes'].sum()
+                st.metric("Classes by Master", master_classes)
+            
+            # Bachelor Analysis
             with col3:
-                avg_phd_load = phd_tutors[phd_tutors['Total Classes'] > 0]['Total Classes'].mean() if phd_assigned > 0 else 0
-                st.metric("Avg PhD Workload", f"{avg_phd_load:.1f}")
-                st.caption("Classes per assigned PhD tutor")
+                st.markdown("**Bachelor Priority (Base)**")
+                bachelor_tutors = workload_df[workload_df['Degree'] == 'Bachelor']
+                bachelor_assigned = bachelor_tutors[bachelor_tutors['Total Classes'] > 0].shape[0]
+                bachelor_total = len(bachelor_tutors)
+                st.metric("Bachelor Tutors Assigned", f"{bachelor_assigned}/{bachelor_total}")
+                if bachelor_total > 0:
+                    st.caption(f"{bachelor_assigned/bachelor_total*100:.0f}% utilization")
+                
+                bachelor_classes = bachelor_tutors['Total Classes'].sum()
+                st.metric("Classes by Bachelor", bachelor_classes)
             
             # Course diversity
             st.subheader("📊 Course Diversity Analysis")
