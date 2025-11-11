@@ -733,7 +733,7 @@ def show_review_tutors_step():
         
         with col1:
             st.markdown(f"**{row['tutor_name']}**")
-            st.caption(f"📧 {row['email']}")
+    
         
         with col2:
             # Show original degree text with color-coded status
