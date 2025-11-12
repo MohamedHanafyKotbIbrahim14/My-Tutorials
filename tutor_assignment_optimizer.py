@@ -1405,7 +1405,7 @@ def show_optimization_step():
                 "PhD Priority Bonus (β)",
                 min_value=0.0,
                 max_value=20.0,
-                value=10.0,
+                value=20.0,
                 step=1.0,
                 help="Bonus points for assigning PhD students"
             )
@@ -1423,7 +1423,7 @@ def show_optimization_step():
                 "Master Priority Bonus (γ)",
                 min_value=0.0,
                 max_value=15.0,
-                value=5.0,
+                value=15.0,
                 step=1.0,
                 help="Bonus points for Master students (should be < PhD bonus)"
             )
