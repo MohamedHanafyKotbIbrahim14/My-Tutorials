@@ -731,17 +731,30 @@ def show_review_tutors_step():
     
     st.markdown("---")
     
+    # Initialize edited values in session state if not exists
+    if 'edited_degrees' not in st.session_state:
+        st.session_state.edited_degrees = {}
+        for tutor_name in tutors_df['tutor_name'].unique():
+            current_degree = st.session_state.degrees.get(tutor_name, 'Bachelor')
+            st.session_state.edited_degrees[tutor_name] = normalize_degree(current_degree)
+    
+    if 'edited_max_classes' not in st.session_state:
+        st.session_state.edited_max_classes = dict(st.session_state.max_classes)
+    
     # Check for issues
     needs_review_max = tutors_df[tutors_df['max_classes_status'].str.contains('defaulted|Could not parse', case=False, na=False)]
-    high_load_tutors = tutors_df[tutors_df['max_classes'] > 4]
+    high_load_tutors_original = tutors_df[tutors_df['max_classes'] > 4]
+    
+    # Check edited values for high load
+    high_load_count_edited = sum(1 for max_val in st.session_state.edited_max_classes.values() if max_val > 4)
     
     if len(needs_review_max) > 0:
         st.warning(f"⚠️ {len(needs_review_max)} tutor(s) have max_classes values that may need correction")
     else:
         st.success("✅ All max_classes values parsed successfully!")
     
-    if len(high_load_tutors) > 0:
-        st.warning(f"🟠 {len(high_load_tutors)} tutor(s) have max classes > 4 - please verify these workloads are appropriate")
+    if high_load_count_edited > 0:
+        st.warning(f"🟠 {high_load_count_edited} tutor(s) have max classes > 4 - please verify these workloads are appropriate")
     
     st.markdown("---")
     
@@ -763,15 +776,14 @@ def show_review_tutors_step():
     
     st.markdown("---")
     
-    edited_degrees = {}
-    edited_max_classes = {}
-    
     # Data rows
     for idx, row in tutors_df.iterrows():
         col1, col2, col3, col4, col5 = st.columns([3, 3, 2, 3, 1])
         
+        tutor_name = row['tutor_name']
+        
         with col1:
-            st.markdown(f"**{row['tutor_name']}**")
+            st.markdown(f"**{tutor_name}**")
         
         with col2:
             # Show original degree text with color-coded status
@@ -801,15 +813,14 @@ def show_review_tutors_step():
             # Degree dropdown - Only PhD, Master, Bachelor
             degree_options = ['PhD', 'Master', 'Bachelor']
             
-            # Get current degree or use default
-            current_degree = degrees.get(row['tutor_name'], 'Bachelor')
-            normalized_degree = normalize_degree(current_degree)
+            # Get current edited degree
+            current_edited_degree = st.session_state.edited_degrees.get(tutor_name, 'Bachelor')
             
             # Ensure normalized degree is in options
-            if normalized_degree not in degree_options:
-                normalized_degree = default_degree
+            if current_edited_degree not in degree_options:
+                current_edited_degree = default_degree
             
-            default_idx = degree_options.index(normalized_degree)
+            default_idx = degree_options.index(current_edited_degree)
             
             new_degree = st.selectbox(
                 "Qualification",
@@ -819,18 +830,20 @@ def show_review_tutors_step():
                 label_visibility="collapsed"
             )
             
+            # Update session state if changed
+            if new_degree != st.session_state.edited_degrees.get(tutor_name):
+                st.session_state.edited_degrees[tutor_name] = new_degree
+            
             # Show teaching eligibility
             if new_degree == 'PhD':
                 st.caption("✅ PG & UG")
             else:
                 st.caption("⚠️ UG only")
-            
-            edited_degrees[row['tutor_name']] = new_degree
         
         with col4:
             # Max classes status with color coding
             status = row['max_classes_status']
-            current_max_value = int(row['max_classes'])
+            current_max_value = st.session_state.edited_max_classes.get(tutor_name, int(row['max_classes']))
             
             # Check if max classes > 4
             if current_max_value > 4:
@@ -844,15 +857,21 @@ def show_review_tutors_step():
                 st.success(f"✅ {status[:50]}")
         
         with col5:
+            # Get current value from session state
+            current_max = st.session_state.edited_max_classes.get(tutor_name, int(row['max_classes']))
+            
             new_max = st.number_input(
                 "Max",
                 min_value=1,
                 max_value=50,
-                value=int(row['max_classes']),
-                key=f"max_{idx}",
+                value=current_max,
+                key=f"max_{idx}_{tutor_name}",  # Unique key with tutor name
                 label_visibility="collapsed"
             )
-            edited_max_classes[row['tutor_name']] = new_max
+            
+            # Update session state if changed
+            if new_max != st.session_state.edited_max_classes.get(tutor_name):
+                st.session_state.edited_max_classes[tutor_name] = new_max
             
             # Show warning icon if > 5
             if new_max > 5:
@@ -864,7 +883,7 @@ def show_review_tutors_step():
     st.subheader("📊 Summary of Education Levels")
     
     degree_summary = {}
-    for degree in edited_degrees.values():
+    for degree in st.session_state.edited_degrees.values():
         degree_summary[degree] = degree_summary.get(degree, 0) + 1
     
     col1, col2, col3 = st.columns(3)
@@ -881,10 +900,10 @@ def show_review_tutors_step():
     # Summary of workload warnings
     st.subheader("⚠️ Workload Summary")
     
-    high_load_count = sum(1 for max_val in edited_max_classes.values() if max_val > 4)
+    high_load_count = sum(1 for max_val in st.session_state.edited_max_classes.values() if max_val > 4)
     if high_load_count > 0:
         st.warning(f"🟠 {high_load_count} tutor(s) with max classes > 4:")
-        high_load_list = [(name, max_val) for name, max_val in edited_max_classes.items() if max_val > 4]
+        high_load_list = [(name, max_val) for name, max_val in st.session_state.edited_max_classes.items() if max_val > 4]
         high_load_list.sort(key=lambda x: x[1], reverse=True)
         
         for name, max_val in high_load_list:
@@ -904,8 +923,9 @@ def show_review_tutors_step():
     
     with col3:
         if st.button("Next: Academic Preferences →", type="primary"):
-            st.session_state.degrees = edited_degrees
-            st.session_state.max_classes = edited_max_classes
+            # Save the edited values to the main session state
+            st.session_state.degrees = dict(st.session_state.edited_degrees)
+            st.session_state.max_classes = dict(st.session_state.edited_max_classes)
             st.session_state.step = 4
             st.rerun()
 
