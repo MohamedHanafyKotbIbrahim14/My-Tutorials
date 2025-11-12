@@ -145,9 +145,9 @@ class TutorAssignmentLP:
             var_name = f"y_{len(self.y_vars)}"
             self.y_vars[(tutor, course)] = pulp.LpVariable(var_name, cat='Binary')
         
-        # Objective function
+        # Objective function - now uses the preference values which include academic ratings
         preference_term = pulp.lpSum([
-            10 * self.x_vars[(tutor, course, class_id)]
+            self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
         ])
         
@@ -494,6 +494,27 @@ def load_file2_tutors(file_path: str) -> Tuple[pd.DataFrame, Dict[str, List[str]
     return pd.DataFrame(tutors_data), preferences, max_classes, parsing_status, degrees
 
 
+def get_star_display(rating: int) -> str:
+    """Convert numeric rating to star display."""
+    full_stars = rating
+    empty_stars = 10 - rating
+    return "★" * full_stars + "☆" * empty_stars
+
+
+def get_rating_emoji(rating: int) -> str:
+    """Get emoji based on rating."""
+    if rating >= 9:
+        return "🌟"
+    elif rating >= 7:
+        return "✨"
+    elif rating >= 5:
+        return "⭐"
+    elif rating >= 3:
+        return "⚠️"
+    else:
+        return "❌"
+
+
 def main():
     st.set_page_config(
         page_title="Tutor Assignment Optimizer",
@@ -515,8 +536,10 @@ def main():
     elif st.session_state.step == 3:
         show_review_tutors_step()
     elif st.session_state.step == 4:
-        show_analysis_step()
+        show_academic_preferences_step()
     elif st.session_state.step == 5:
+        show_analysis_step()
+    elif st.session_state.step == 6:
         show_optimization_step()
 
 
@@ -872,7 +895,7 @@ def show_review_tutors_step():
         for name, max_val in high_load_list:
             st.write(f"- **{name}**: {max_val} classes")
     else:
-        st.success("✅ All tutors have reasonable workloads (≤ 5 classes)")
+        st.success("✅ All tutors have reasonable workloads (≤ 4 classes)")
     
     st.markdown("---")
     
@@ -885,22 +908,254 @@ def show_review_tutors_step():
             st.rerun()
     
     with col3:
-        if st.button("Next: Analysis →", type="primary"):
+        if st.button("Next: Academic Preferences →", type="primary"):
             st.session_state.degrees = edited_degrees
             st.session_state.max_classes = edited_max_classes
             st.session_state.step = 4
             st.rerun()
 
 
+def show_academic_preferences_step():
+    """Step 4: Set academic preferences for tutors (NEW STEP)."""
+    st.header("Step 4: Academic Preferences for Tutors")
+    
+    classes_df = st.session_state.classes_df
+    tutors_df = st.session_state.tutors_df
+    preferences = st.session_state.preferences
+    degrees = st.session_state.degrees
+    
+    st.markdown("""
+    **Rate how much you want each tutor to teach each course.**
+    
+    **Rating Scale (1-10):**
+    - 🌟 **10 - Strongly Prefer**: Excellent past performance, first choice
+    - ✨ **8-9 - Prefer**: Good choice, strong preference
+    - ⭐ **5-7 - Neutral/Acceptable**: Okay, will work
+    - ⚠️ **3-4 - Less Preferred**: Concerns, use if needed
+    - ❌ **1-2 - Avoid**: Significant concerns, last resort
+    
+    **All tutors start at 5 (Neutral) by default.**
+    """)
+    
+    st.info("💡 **Tip**: Higher ratings give more weight in the optimization. The optimizer will try to match high-rated tutors to courses when possible.")
+    
+    st.markdown("---")
+    
+    # Initialize academic preferences if not exists
+    if 'academic_preferences' not in st.session_state:
+        # Default all to 5 (neutral)
+        st.session_state.academic_preferences = {}
+        for tutor in tutors_df['tutor_name'].unique():
+            for course in preferences.get(tutor, []):
+                st.session_state.academic_preferences[(course, tutor)] = 5
+    
+    # Get unique courses
+    unique_courses = sorted(classes_df['course'].unique())
+    
+    # Course selection
+    st.subheader("Select Course to Rate")
+    selected_course = st.selectbox(
+        "Choose a course:",
+        options=unique_courses,
+        key='selected_course_for_rating'
+    )
+    
+    st.markdown("---")
+    
+    # Show tutors for selected course
+    course_level = classes_df[classes_df['course'] == selected_course].iloc[0]['course_level']
+    
+    st.subheader(f"Rate Tutors for {selected_course} ({course_level})")
+    
+    # Filter tutors who can teach this course
+    eligible_tutors = []
+    for tutor in tutors_df['tutor_name'].unique():
+        # Check if tutor has preference for this course
+        if selected_course in preferences.get(tutor, []):
+            # Check degree eligibility
+            tutor_degree = degrees.get(tutor, '')
+            if course_level == 'PG' and tutor_degree != 'PhD':
+                continue  # Skip non-PhD for PG courses
+            eligible_tutors.append(tutor)
+    
+    if len(eligible_tutors) == 0:
+        st.warning(f"⚠️ No eligible tutors found for {selected_course}!")
+        if course_level == 'PG':
+            st.info("This is a PG course - only PhD tutors who expressed preference can teach it.")
+    else:
+        st.success(f"✅ Found {len(eligible_tutors)} eligible tutor(s) for this course")
+        
+        # Bulk actions
+        st.markdown("**Quick Actions:**")
+        col1, col2, col3, col4 = st.columns(4)
+        
+        with col1:
+            if st.button("Set All to 10 (Strongly Prefer)", key=f"set_all_10_{selected_course}"):
+                for tutor in eligible_tutors:
+                    st.session_state.academic_preferences[(selected_course, tutor)] = 10
+                st.rerun()
+        
+        with col2:
+            if st.button("Set All to 7 (Prefer)", key=f"set_all_7_{selected_course}"):
+                for tutor in eligible_tutors:
+                    st.session_state.academic_preferences[(selected_course, tutor)] = 7
+                st.rerun()
+        
+        with col3:
+            if st.button("Set All to 5 (Neutral)", key=f"set_all_5_{selected_course}"):
+                for tutor in eligible_tutors:
+                    st.session_state.academic_preferences[(selected_course, tutor)] = 5
+                st.rerun()
+        
+        with col4:
+            if st.button("Set All to 3 (Less Prefer)", key=f"set_all_3_{selected_course}"):
+                for tutor in eligible_tutors:
+                    st.session_state.academic_preferences[(selected_course, tutor)] = 3
+                st.rerun()
+        
+        st.markdown("---")
+        
+        # Individual tutor ratings
+        st.markdown("**Individual Ratings:**")
+        
+        # Sort tutors by current rating (highest first)
+        eligible_tutors_sorted = sorted(
+            eligible_tutors,
+            key=lambda t: st.session_state.academic_preferences.get((selected_course, t), 5),
+            reverse=True
+        )
+        
+        for tutor in eligible_tutors_sorted:
+            current_rating = st.session_state.academic_preferences.get((selected_course, tutor), 5)
+            tutor_degree = degrees.get(tutor, 'Not Specified')
+            
+            col1, col2, col3, col4 = st.columns([3, 2, 3, 2])
+            
+            with col1:
+                st.markdown(f"**{tutor}**")
+                st.caption(f"Degree: {tutor_degree}")
+            
+            with col2:
+                rating_emoji = get_rating_emoji(current_rating)
+                stars = get_star_display(current_rating)
+                st.markdown(f"{rating_emoji} **{current_rating}/10**")
+                st.caption(stars)
+            
+            with col3:
+                new_rating = st.slider(
+                    "Rating",
+                    min_value=1,
+                    max_value=10,
+                    value=current_rating,
+                    key=f"rating_{selected_course}_{tutor}",
+                    label_visibility="collapsed"
+                )
+                
+                if new_rating != current_rating:
+                    st.session_state.academic_preferences[(selected_course, tutor)] = new_rating
+            
+            with col4:
+                if new_rating >= 8:
+                    st.success("Prefer")
+                elif new_rating >= 5:
+                    st.info("Neutral")
+                else:
+                    st.warning("Less Prefer")
+            
+            st.markdown("---")
+    
+    # Summary statistics
+    st.subheader("📊 Overall Summary")
+    
+    # Count ratings across all courses
+    rating_counts = {i: 0 for i in range(1, 11)}
+    for rating in st.session_state.academic_preferences.values():
+        rating_counts[rating] = rating_counts.get(rating, 0) + 1
+    
+    col1, col2, col3, col4 = st.columns(4)
+    
+    with col1:
+        high_ratings = sum(v for k, v in rating_counts.items() if k >= 8)
+        st.metric("Preferred (8-10)", high_ratings)
+        st.caption("🌟 Strong preference")
+    
+    with col2:
+        neutral_ratings = sum(v for k, v in rating_counts.items() if 5 <= k <= 7)
+        st.metric("Neutral (5-7)", neutral_ratings)
+        st.caption("⭐ Acceptable")
+    
+    with col3:
+        low_ratings = sum(v for k, v in rating_counts.items() if k < 5)
+        st.metric("Less Preferred (1-4)", low_ratings)
+        st.caption("⚠️ Use if needed")
+    
+    with col4:
+        total_ratings = len(st.session_state.academic_preferences)
+        st.metric("Total Ratings", total_ratings)
+        st.caption("📝 All tutor-course pairs")
+    
+    # Show rating distribution chart
+    with st.expander("📈 View Rating Distribution"):
+        rating_dist_data = pd.DataFrame([
+            {'Rating': k, 'Count': v} 
+            for k, v in rating_counts.items()
+        ])
+        
+        fig = px.bar(
+            rating_dist_data,
+            x='Rating',
+            y='Count',
+            title='Distribution of Academic Ratings',
+            labels={'Rating': 'Rating (1-10)', 'Count': 'Number of Tutor-Course Pairs'},
+            color='Rating',
+            color_continuous_scale='RdYlGn'
+        )
+        fig.update_layout(height=300)
+        st.plotly_chart(fig, use_container_width=True)
+    
+    # Show all ratings table
+    with st.expander("📋 View All Ratings"):
+        all_ratings_data = []
+        for (course, tutor), rating in sorted(st.session_state.academic_preferences.items()):
+            tutor_degree = degrees.get(tutor, 'N/A')
+            all_ratings_data.append({
+                'Course': course,
+                'Tutor': tutor,
+                'Degree': tutor_degree,
+                'Rating': rating,
+                'Stars': get_star_display(rating),
+                'Status': get_rating_emoji(rating)
+            })
+        
+        all_ratings_df = pd.DataFrame(all_ratings_data)
+        st.dataframe(all_ratings_df, use_container_width=True, hide_index=True)
+    
+    st.markdown("---")
+    
+    # Navigation buttons
+    col1, col2, col3 = st.columns([1, 2, 1])
+    
+    with col1:
+        if st.button("← Back to Review Tutors"):
+            st.session_state.step = 3
+            st.rerun()
+    
+    with col3:
+        if st.button("Next: Analysis →", type="primary"):
+            st.session_state.step = 5
+            st.rerun()
+
+
 def show_analysis_step():
-    """Step 4: Show data analysis and visualizations."""
-    st.header("Step 4: Data Analysis")
+    """Step 5: Show data analysis and visualizations."""
+    st.header("Step 5: Data Analysis")
     
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
     degrees = st.session_state.degrees
+    academic_preferences = st.session_state.get('academic_preferences', {})
     
     st.subheader("📊 Overview")
     col1, col2, col3, col4, col5 = st.columns(5)
@@ -964,7 +1219,7 @@ def show_analysis_step():
     fig_courses.update_layout(height=400)
     st.plotly_chart(fig_courses, use_container_width=True)
     
-    st.subheader("📋 Course Coverage Analysis (with Degree Requirements)")
+    st.subheader("📋 Course Coverage Analysis (with Degree Requirements & Academic Preferences)")
     
     st.info("ℹ️ Even if some courses show insufficient capacity, optimization will still run and show which classes remain unassigned.")
     
@@ -990,12 +1245,20 @@ def show_analysis_step():
         num_qualified = len(qualified_tutors)
         total_capacity_for_course = sum([max_classes.get(tutor, 0) for tutor in qualified_tutors])
         
+        # Calculate average academic rating for this course
+        course_ratings = [
+            academic_preferences.get((course, tutor), 5)
+            for tutor in qualified_tutors
+        ]
+        avg_rating = sum(course_ratings) / len(course_ratings) if course_ratings else 5
+        
         coverage_data.append({
             'Course': course,
             'Level': course_level,
             'Classes': num_classes,
             'Qualified Tutors': num_qualified,
             'Tutor Capacity': total_capacity_for_course,
+            'Avg Academic Rating': f"{avg_rating:.1f}",
             'Ratio': f"{total_capacity_for_course / num_classes:.2f}x" if num_classes > 0 else "N/A",
             'Status': '✅' if total_capacity_for_course >= num_classes else '⚠️'
         })
@@ -1016,35 +1279,81 @@ def show_analysis_step():
         
         st.info("💡 The optimization will still run and show which specific classes cannot be assigned.")
     
+    # Academic Preferences Summary
+    st.subheader("🎓 Academic Preferences Summary")
+    
+    col1, col2 = st.columns(2)
+    
+    with col1:
+        # Show top-rated tutors
+        tutor_avg_ratings = {}
+        for (course, tutor), rating in academic_preferences.items():
+            if tutor not in tutor_avg_ratings:
+                tutor_avg_ratings[tutor] = []
+            tutor_avg_ratings[tutor].append(rating)
+        
+        tutor_avg_ratings_computed = {
+            tutor: sum(ratings) / len(ratings)
+            for tutor, ratings in tutor_avg_ratings.items()
+        }
+        
+        top_tutors = sorted(tutor_avg_ratings_computed.items(), key=lambda x: x[1], reverse=True)[:10]
+        
+        st.markdown("**Top 10 Highest-Rated Tutors (Average):**")
+        for tutor, avg_rating in top_tutors:
+            stars = get_star_display(int(round(avg_rating)))
+            st.write(f"{get_rating_emoji(int(round(avg_rating)))} **{tutor}**: {avg_rating:.1f}/10 {stars}")
+    
+    with col2:
+        # Show courses with highest average ratings
+        course_avg_ratings = {}
+        for (course, tutor), rating in academic_preferences.items():
+            if course not in course_avg_ratings:
+                course_avg_ratings[course] = []
+            course_avg_ratings[course].append(rating)
+        
+        course_avg_ratings_computed = {
+            course: sum(ratings) / len(ratings)
+            for course, ratings in course_avg_ratings.items()
+        }
+        
+        top_courses = sorted(course_avg_ratings_computed.items(), key=lambda x: x[1], reverse=True)
+        
+        st.markdown("**Courses by Average Academic Rating:**")
+        for course, avg_rating in top_courses:
+            stars = get_star_display(int(round(avg_rating)))
+            st.write(f"{get_rating_emoji(int(round(avg_rating)))} **{course}**: {avg_rating:.1f}/10")
+    
     st.markdown("---")
     
     col1, col2 = st.columns([1, 1])
     with col1:
-        if st.button("← Back to Review Tutors"):
-            st.session_state.step = 3
+        if st.button("← Back to Academic Preferences"):
+            st.session_state.step = 4
             st.rerun()
     
     with col2:
         if st.button("Run Optimization →", type="primary"):
-            st.session_state.step = 5
+            st.session_state.step = 6
             st.rerun()
 
 
 def show_optimization_step():
-    """Step 5: Run optimization and show results - WITH FORM TO PREVENT RERUNS."""
-    st.header("Step 5: Optimization Results")
+    """Step 6: Run optimization and show results - WITH FORM TO PREVENT RERUNS."""
+    st.header("Step 6: Optimization Results")
     
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
     preferences = st.session_state.preferences
     max_classes = st.session_state.max_classes
     degrees = st.session_state.degrees
+    academic_preferences = st.session_state.get('academic_preferences', {})
     
     # Use a form to prevent reruns on input changes
     with st.form("optimization_form"):
         st.subheader("⚙️ Optimization Parameters")
         
-        col1, col2, col3 = st.columns(3)
+        col1, col2, col3, col4 = st.columns(4)
         
         with col1:
             course_diversity_penalty = st.slider(
@@ -1057,11 +1366,11 @@ def show_optimization_step():
             )
             
             st.info(f"""
-            **Current Setting: {course_diversity_penalty}**
+            **Current: {course_diversity_penalty}**
             
             - **0**: No penalty
-            - **5**: Moderate (recommended)
-            - **10+**: Strong penalty
+            - **5**: Moderate
+            - **10+**: Strong
             """)
         
         with col2:
@@ -1069,19 +1378,17 @@ def show_optimization_step():
                 "PhD Priority Bonus",
                 min_value=0.0,
                 max_value=10.0,
-                value=10.0,
+                value=2.0,
                 step=0.5,
                 help="Higher bonus gives more priority to assigning PhD students"
             )
             
             st.success(f"""
-            **Current Setting: {phd_priority_bonus}**
+            **Current: {phd_priority_bonus}**
             
             - **0**: No priority
-            - **2**: Moderate (recommended)
-            - **5+**: Strong priority
-            
-            🎓 **Priority: PhD > Master > Bachelor**
+            - **2**: Moderate
+            - **5+**: Strong
             """)
         
         with col3:
@@ -1089,19 +1396,35 @@ def show_optimization_step():
                 "Master Priority Bonus",
                 min_value=0.0,
                 max_value=5.0,
-                value=5.0,
+                value=1.0,
                 step=0.5,
                 help="Higher bonus gives more priority to Master students (should be less than PhD bonus)"
             )
             
             st.info(f"""
-            **Current Setting: {master_priority_bonus}**
+            **Current: {master_priority_bonus}**
             
             - **0**: No priority
-            - **1**: Moderate (recommended)
-            - **2+**: Strong priority
+            - **1**: Moderate
+            - **2+**: Strong
+            """)
+        
+        with col4:
+            academic_weight = st.slider(
+                "Academic Preference Weight",
+                min_value=1.0,
+                max_value=20.0,
+                value=10.0,
+                step=1.0,
+                help="Multiplier for academic ratings (higher = more influence)"
+            )
             
-            📚 **Master students get medium priority**
+            st.warning(f"""
+            **Current: {academic_weight}**
+            
+            - **1-5**: Low influence
+            - **10**: Balanced
+            - **15+**: High influence
             """)
         
         # Submit button
@@ -1117,11 +1440,14 @@ def show_optimization_step():
             
             st.markdown("---")
             
-            # Build preference dictionary
+            # Build preference dictionary with academic ratings
             pref_dict = {}
             for tutor, courses in preferences.items():
                 for course in courses:
-                    pref_dict[(tutor, course)] = 10
+                    # Get academic rating (default 5 if not set)
+                    academic_rating = academic_preferences.get((course, tutor), 5)
+                    # Final score = academic_weight * academic_rating
+                    pref_dict[(tutor, course)] = academic_weight * academic_rating
             
             # Progress tracking
             progress_bar = st.progress(0)
@@ -1200,6 +1526,13 @@ def show_optimization_step():
                 
                 tutor_degree = degrees.get(assigned_tutor, 'N/A') if assigned_tutor != 'UNASSIGNED' else 'N/A'
                 
+                # Get academic rating for this assignment
+                if assigned_tutor != 'UNASSIGNED':
+                    academic_rating = academic_preferences.get((course, assigned_tutor), 5)
+                    rating_display = f"{academic_rating} {get_star_display(academic_rating)}"
+                else:
+                    rating_display = 'N/A'
+                
                 results_data.append({
                     'Course': course,
                     'Level': row['course_level'],
@@ -1208,7 +1541,8 @@ def show_optimization_step():
                     'Section': row['section'],
                     'Time': row['time'],
                     'Assigned Tutor': assigned_tutor,
-                    'Tutor Degree': tutor_degree
+                    'Tutor Degree': tutor_degree,
+                    'Academic Rating': rating_display
                 })
             
             results_df = pd.DataFrame(results_data)
@@ -1247,6 +1581,38 @@ def show_optimization_step():
             
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
+            # Academic Rating Satisfaction Analysis
+            st.subheader("🎓 Academic Rating Satisfaction")
+            
+            assigned_df = results_df[results_df['Assigned Tutor'] != 'UNASSIGNED'].copy()
+            
+            # Parse ratings from display string
+            assigned_df['Rating_Numeric'] = assigned_df['Academic Rating'].apply(
+                lambda x: int(x.split()[0]) if x != 'N/A' else 0
+            )
+            
+            col1, col2, col3, col4 = st.columns(4)
+            
+            with col1:
+                high_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] >= 8])
+                st.metric("High Satisfaction (8-10)", high_satisfaction)
+                st.caption(f"{high_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
+            
+            with col2:
+                medium_satisfaction = len(assigned_df[(assigned_df['Rating_Numeric'] >= 5) & (assigned_df['Rating_Numeric'] < 8)])
+                st.metric("Medium Satisfaction (5-7)", medium_satisfaction)
+                st.caption(f"{medium_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
+            
+            with col3:
+                low_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] < 5])
+                st.metric("Low Satisfaction (1-4)", low_satisfaction)
+                st.caption(f"{low_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
+            
+            with col4:
+                avg_rating = assigned_df['Rating_Numeric'].mean() if len(assigned_df) > 0 else 0
+                st.metric("Average Rating", f"{avg_rating:.1f}/10")
+                st.caption(get_star_display(int(round(avg_rating))))
+            
             # Tutor workload summary
             st.subheader("👥 Tutor Workload Summary")
             
@@ -1258,6 +1624,7 @@ def show_optimization_step():
                 courses_count = {}
                 pg_count = 0
                 ug_count = 0
+                ratings_for_tutor = []
                 
                 for course, class_id in assigned_classes:
                     courses_count[course] = courses_count.get(course, 0) + 1
@@ -1269,11 +1636,17 @@ def show_optimization_step():
                         pg_count += 1
                     else:
                         ug_count += 1
+                    
+                    # Get academic rating
+                    rating = academic_preferences.get((course, tutor), 5)
+                    ratings_for_tutor.append(rating)
                 
                 courses_str = ', '.join([f"{course}({count})" for course, count in courses_count.items()])
                 num_different_courses = solution['tutor_course_diversity'].get(tutor, 0)
                 
                 tutor_degree = degrees.get(tutor, 'Not Specified')
+                
+                avg_rating = sum(ratings_for_tutor) / len(ratings_for_tutor) if ratings_for_tutor else 0
                 
                 workload_data.append({
                     'Tutor': tutor,
@@ -1284,6 +1657,7 @@ def show_optimization_step():
                     'Total Classes': load['total'],
                     'Max Allowed': max_classes.get(tutor, 0),
                     'Utilization': f"{load['total']}/{max_classes.get(tutor, 0)}",
+                    'Avg Academic Rating': f"{avg_rating:.1f}" if avg_rating > 0 else "N/A",
                     'Courses Assigned': courses_str if courses_str else 'None'
                 })
             
@@ -1430,11 +1804,22 @@ def show_optimization_step():
                 if solution['unassigned_classes']:
                     unassigned_df.to_excel(writer, sheet_name='Unassigned', index=False)
                     unassigned_by_course.to_excel(writer, sheet_name='Unassigned by Course', index=False)
+                
+                # Add academic preferences sheet
+                academic_prefs_export = []
+                for (course, tutor), rating in sorted(academic_preferences.items()):
+                    academic_prefs_export.append({
+                        'Course': course,
+                        'Tutor': tutor,
+                        'Academic Rating': rating
+                    })
+                academic_prefs_df = pd.DataFrame(academic_prefs_export)
+                academic_prefs_df.to_excel(writer, sheet_name='Academic Preferences', index=False)
             
             st.download_button(
                 label="📥 Download Results (Excel)",
                 data=output.getvalue(),
-                file_name="tutor_assignments_T3_optimized.xlsx",
+                file_name="tutor_assignments_T3_optimized_with_preferences.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
@@ -1449,7 +1834,7 @@ def show_optimization_step():
             # Clear optimization results when going back
             if 'optimization_results' in st.session_state:
                 del st.session_state.optimization_results
-            st.session_state.step = 4
+            st.session_state.step = 5
             st.rerun()
     
     with col2:
