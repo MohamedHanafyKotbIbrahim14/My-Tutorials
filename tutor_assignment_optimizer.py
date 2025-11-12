@@ -1378,7 +1378,7 @@ def show_optimization_step():
                 "PhD Priority Bonus",
                 min_value=0.0,
                 max_value=10.0,
-                value=2.0,
+                value=10.0,
                 step=0.5,
                 help="Higher bonus gives more priority to assigning PhD students"
             )
@@ -1396,7 +1396,7 @@ def show_optimization_step():
                 "Master Priority Bonus",
                 min_value=0.0,
                 max_value=5.0,
-                value=1.0,
+                value=5.0,
                 step=0.5,
                 help="Higher bonus gives more priority to Master students (should be less than PhD bonus)"
             )
@@ -1414,7 +1414,7 @@ def show_optimization_step():
                 "Academic Preference Weight",
                 min_value=1.0,
                 max_value=20.0,
-                value=10.0,
+                value=20.0,
                 step=1.0,
                 help="Multiplier for academic ratings (higher = more influence)"
             )
