@@ -386,7 +386,20 @@ def parse_max_classes(value) -> Tuple[int, str]:
 
 
 def classify_course_level(course_code: str) -> str:
-    """Classify course as PG or UG. Default: PG."""
+    """
+    Classify course as PG or UG based on course number.
+    Courses with numbers < 5000 are UG, >= 5000 are PG.
+    """
+    # Extract the numeric part from course code (e.g., "ACTL2102" -> 2102)
+    match = re.search(r'(\d{4})', course_code)
+    if match:
+        course_number = int(match.group(1))
+        if course_number >= 5000:
+            return 'PG'
+        else:
+            return 'UG'
+    
+    # Default to PG if can't parse
     return 'PG'
 
 
@@ -552,11 +565,11 @@ def show_upload_step():
     with col1:
         st.subheader("📄 File 1: Classes (T3)")
         st.markdown("""
-        **Required structure:**
-        - Course codes in first column
-        - Class details: Number, Type (TUT/LAB), Section, Mode, Status, Time, Tutor
-        - Only TUT/LAB classes will be used (LEC ignored)
-        - **All courses default to PG (Postgraduate)**
+        **Upload your class schedule Excel file.**
+        
+        The system will automatically extract TUT/LAB classes and classify courses:
+        - Courses with numbers < 5000 (e.g., ACTL2102) → UG (Undergraduate)
+        - Courses with numbers ≥ 5000 (e.g., ACTL5106) → PG (Postgraduate)
         """)
         
         file1 = st.file_uploader(
@@ -568,11 +581,12 @@ def show_upload_step():
     with col2:
         st.subheader("👥 File 2: Tutor Preferences")
         st.markdown("""
-        **Will extract:**
-        - Column BF (57): Degree (PhD/Master/Bachelor)
-        - Column DE (108): T3 course preferences
-        - Column DG (110): Maximum classes per week
-        - Tutor names (First, Last, Preferred)
+        **Upload your tutor information Excel file.**
+        
+        The system will extract:
+        - Tutor names and degree information
+        - Course preferences for T3
+        - Maximum workload capacity
         
         **Degree Rules:**
         - 🎓 PhD → Can teach both PG and UG courses
@@ -648,8 +662,11 @@ def show_course_level_step():
     classes_df = st.session_state.classes_df
     
     st.markdown("""
-    **All courses are set to PG (Postgraduate) by default.**  
-    Change any course to UG (Undergraduate) if needed.
+    **Course levels have been automatically classified based on course numbers:**
+    - Courses with numbers **< 5000** (e.g., ACTL2102) → **UG (Undergraduate)**
+    - Courses with numbers **≥ 5000** (e.g., ACTL5106) → **PG (Postgraduate)**
+    
+    You can review and modify the classifications below if needed.
     
     **Important:**
     - 🎓 PhD tutors can teach **both PG and UG** courses
@@ -660,16 +677,19 @@ def show_course_level_step():
     
     unique_courses = sorted(classes_df['course'].unique())
     
-    st.subheader("Set Course Levels")
+    st.subheader("Review and Modify Course Levels")
     
+    # Initialize course levels from automatic classification if not exists
     if 'course_levels' not in st.session_state:
-        st.session_state.course_levels = {course: 'PG' for course in unique_courses}
+        st.session_state.course_levels = {}
+        for course in unique_courses:
+            st.session_state.course_levels[course] = classify_course_level(course)
     
     col1, col2 = st.columns(2)
     
     for idx, course in enumerate(unique_courses):
         with col1 if idx % 2 == 0 else col2:
-            current_level = st.session_state.course_levels.get(course, 'PG')
+            current_level = st.session_state.course_levels.get(course, classify_course_level(course))
             new_level = st.radio(
                 f"**{course}**",
                 options=['PG', 'UG'],
@@ -680,7 +700,13 @@ def show_course_level_step():
             st.session_state.course_levels[course] = new_level
             
             num_classes = len(classes_df[classes_df['course'] == course])
-            st.caption(f"Classes: {num_classes}")
+            
+            # Show auto-classification info
+            auto_level = classify_course_level(course)
+            if auto_level == new_level:
+                st.caption(f"✅ Classes: {num_classes} | Auto-classified: {auto_level}")
+            else:
+                st.caption(f"⚠️ Classes: {num_classes} | Auto: {auto_level} → Modified: {new_level}")
             st.markdown("---")
     
     st.subheader("📊 Summary")
@@ -925,19 +951,22 @@ def show_academic_preferences_step():
     degrees = st.session_state.degrees
     
     st.markdown("""
-    **Rate how much you want each tutor to teach each course.**
+    **Rate how well each tutor matches each course.**
+    
+    Use the rating scale below to indicate your preference for each tutor teaching each course. 
+    Higher ratings mean you prefer this tutor more for this course.
     
     **Rating Scale (1-10):**
-    - 🌟 **10 - Strongly Prefer**: Excellent past performance, first choice
-    - ✨ **8-9 - Prefer**: Good choice, strong preference
-    - ⭐ **5-7 - Neutral/Acceptable**: Okay, will work
-    - ⚠️ **3-4 - Less Preferred**: Concerns, use if needed
-    - ❌ **1-2 - Avoid**: Significant concerns, last resort (can be blocked with veto)
+    - **10** 🌟 Strongly Prefer - Excellent past performance, first choice
+    - **8-9** ✨ Prefer - Good choice, strong preference
+    - **5-7** ⭐ Neutral/Acceptable - Okay, will work fine
+    - **3-4** ⚠️ Less Preferred - Some concerns, use if needed
+    - **1-2** ❌ Avoid - Significant concerns, last resort
     
-    **All tutors start at 5 (Neutral) by default.**
+    **Default:** All tutors start at **5 (Neutral)** by default.
     """)
     
-    st.info("💡 **Tip**: Higher ratings give more weight in the optimization. The optimizer will try to match high-rated tutors to courses when possible.")
+    st.info("💡 **Tip**: The optimizer will try to match high-rated tutors to courses when possible, while respecting all other constraints (degree requirements, time conflicts, workload limits, etc.).")
     
     st.markdown("---")
     
@@ -985,38 +1014,10 @@ def show_academic_preferences_step():
     else:
         st.success(f"✅ Found {len(eligible_tutors)} eligible tutor(s) for this course")
         
-        # Bulk actions
-        st.markdown("**Quick Actions:**")
-        col1, col2, col3, col4 = st.columns(4)
-        
-        with col1:
-            if st.button("Set All to 10 (Strongly Prefer)", key=f"set_all_10_{selected_course}"):
-                for tutor in eligible_tutors:
-                    st.session_state.academic_preferences[(selected_course, tutor)] = 10
-                st.rerun()
-        
-        with col2:
-            if st.button("Set All to 7 (Prefer)", key=f"set_all_7_{selected_course}"):
-                for tutor in eligible_tutors:
-                    st.session_state.academic_preferences[(selected_course, tutor)] = 7
-                st.rerun()
-        
-        with col3:
-            if st.button("Set All to 5 (Neutral)", key=f"set_all_5_{selected_course}"):
-                for tutor in eligible_tutors:
-                    st.session_state.academic_preferences[(selected_course, tutor)] = 5
-                st.rerun()
-        
-        with col4:
-            if st.button("Set All to 3 (Less Prefer)", key=f"set_all_3_{selected_course}"):
-                for tutor in eligible_tutors:
-                    st.session_state.academic_preferences[(selected_course, tutor)] = 3
-                st.rerun()
-        
         st.markdown("---")
         
-        # Individual tutor ratings
-        st.markdown("**Individual Ratings:**")
+        # Individual tutor ratings - more user-friendly layout
+        st.markdown("**Rate Each Tutor:**")
         
         # Sort tutors by current rating (highest first)
         eligible_tutors_sorted = sorted(
@@ -1029,43 +1030,51 @@ def show_academic_preferences_step():
             current_rating = st.session_state.academic_preferences.get((selected_course, tutor), 5)
             tutor_degree = degrees.get(tutor, 'Not Specified')
             
-            col1, col2, col3, col4 = st.columns([3, 2, 3, 2])
-            
-            with col1:
-                st.markdown(f"**{tutor}**")
-                st.caption(f"Degree: {tutor_degree}")
-            
-            with col2:
-                rating_emoji = get_rating_emoji(current_rating)
-                stars = get_star_display(current_rating)
-                st.markdown(f"{rating_emoji} **{current_rating}/10**")
-                st.caption(stars)
-            
-            with col3:
-                new_rating = st.slider(
-                    "Rating",
-                    min_value=1,
-                    max_value=10,
-                    value=current_rating,
-                    key=f"rating_{selected_course}_{tutor}",
-                    label_visibility="collapsed"
-                )
+            # Create a nice card-like container for each tutor
+            with st.container():
+                col1, col2 = st.columns([1, 2])
                 
-                if new_rating != current_rating:
-                    st.session_state.academic_preferences[(selected_course, tutor)] = new_rating
-            
-            with col4:
-                if new_rating >= 8:
-                    st.success("Prefer")
-                elif new_rating >= 5:
-                    st.info("Neutral")
-                else:
-                    st.warning("Less Prefer")
-            
-            st.markdown("---")
+                with col1:
+                    st.markdown(f"### {tutor}")
+                    st.caption(f"🎓 Degree: **{tutor_degree}**")
+                    
+                    # Show current rating with stars
+                    rating_emoji = get_rating_emoji(current_rating)
+                    stars = get_star_display(current_rating)
+                    st.markdown(f"{rating_emoji} **Current Rating: {current_rating}/10**")
+                    st.caption(stars)
+                
+                with col2:
+                    # Rating slider
+                    new_rating = st.slider(
+                        f"Set Rating for {tutor}",
+                        min_value=1,
+                        max_value=10,
+                        value=current_rating,
+                        key=f"rating_{selected_course}_{tutor}",
+                        help=f"Rate how well {tutor} matches {selected_course}"
+                    )
+                    
+                    # Update the rating if changed
+                    if new_rating != current_rating:
+                        st.session_state.academic_preferences[(selected_course, tutor)] = new_rating
+                    
+                    # Show interpretation
+                    if new_rating >= 9:
+                        st.success("🌟 **Strongly Prefer** - First choice for this course")
+                    elif new_rating >= 8:
+                        st.success("✨ **Prefer** - Good choice for this course")
+                    elif new_rating >= 5:
+                        st.info("⭐ **Neutral/Acceptable** - Okay for this course")
+                    elif new_rating >= 3:
+                        st.warning("⚠️ **Less Preferred** - Some concerns")
+                    else:
+                        st.error("❌ **Avoid** - Significant concerns")
+                
+                st.markdown("---")
     
     # Summary statistics
-    st.subheader("📊 Overall Summary")
+    st.subheader("📊 Overall Summary Across All Courses")
     
     # Count ratings across all courses
     rating_counts = {i: 0 for i in range(1, 11)}
@@ -1405,7 +1414,7 @@ def show_optimization_step():
                 "PhD Priority Bonus (β)",
                 min_value=0.0,
                 max_value=20.0,
-                value=20.0,
+                value=10.0,
                 step=1.0,
                 help="Bonus points for assigning PhD students"
             )
@@ -1423,7 +1432,7 @@ def show_optimization_step():
                 "Master Priority Bonus (γ)",
                 min_value=0.0,
                 max_value=15.0,
-                value=15.0,
+                value=5.0,
                 step=1.0,
                 help="Bonus points for Master students (should be < PhD bonus)"
             )
@@ -1482,31 +1491,6 @@ def show_optimization_step():
                 st.error(f"❌ **Blocking tutors rated 1-3** - Moderately restrictive")
             else:
                 st.error(f"❌ **Blocking tutors rated 1-4** - Very restrictive, only accepts neutral+ ratings")
-        
-        st.markdown("---")
-        
-        # Example scoring
-        st.subheader("📊 Example Scoring with Current Weights")
-        
-        example_col1, example_col2, example_col3 = st.columns(3)
-        
-        with example_col1:
-            st.markdown("**Best Case (PhD, perfect match):**")
-            best_score = (tutor_preference_weight * 10) + (academic_preference_weight * 10) + phd_priority_bonus
-            st.metric("Total Score", f"{best_score:.0f} points")
-            st.caption("Tutor: Yes (10) + Academic: 10 + PhD bonus")
-        
-        with example_col2:
-            st.markdown("**Good Case (Master, strong match):**")
-            good_score = (tutor_preference_weight * 10) + (academic_preference_weight * 8) + master_priority_bonus
-            st.metric("Total Score", f"{good_score:.0f} points")
-            st.caption("Tutor: Yes (10) + Academic: 8 + Master bonus")
-        
-        with example_col3:
-            st.markdown("**Acceptable Case (Bachelor, neutral):**")
-            acceptable_score = (tutor_preference_weight * 10) + (academic_preference_weight * 5) + 0
-            st.metric("Total Score", f"{acceptable_score:.0f} points")
-            st.caption("Tutor: Yes (10) + Academic: 5 + No bonus")
         
         # Submit button
         run_optimization = st.form_submit_button("🚀 Run Optimization", type="primary")
@@ -1715,57 +1699,6 @@ def show_optimization_step():
                 display_df = display_df[display_df['Level'] == filter_level]
             
             st.dataframe(display_df, use_container_width=True, hide_index=True)
-            
-            # Academic Rating & Combined Score Satisfaction Analysis
-            st.subheader("🎓 Preference Satisfaction Analysis")
-            
-            assigned_df = results_df[results_df['Assigned Tutor'] != 'UNASSIGNED'].copy()
-            
-            # Parse ratings from display string
-            assigned_df['Rating_Numeric'] = assigned_df['Academic Rating'].apply(
-                lambda x: int(x.split()[0]) if x != 'N/A' else 0
-            )
-            
-            assigned_df['Score_Numeric'] = assigned_df['Combined Score'].apply(
-                lambda x: float(x) if x != 'N/A' else 0
-            )
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            with col1:
-                high_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] >= 8])
-                st.metric("High Academic Rating (8-10)", high_satisfaction)
-                st.caption(f"{high_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
-            
-            with col2:
-                medium_satisfaction = len(assigned_df[(assigned_df['Rating_Numeric'] >= 5) & (assigned_df['Rating_Numeric'] < 8)])
-                st.metric("Medium Academic Rating (5-7)", medium_satisfaction)
-                st.caption(f"{medium_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
-            
-            with col3:
-                low_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] < 5])
-                st.metric("Low Academic Rating (1-4)", low_satisfaction)
-                st.caption(f"{low_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
-            
-            with col4:
-                avg_rating = assigned_df['Rating_Numeric'].mean() if len(assigned_df) > 0 else 0
-                st.metric("Avg Academic Rating", f"{avg_rating:.1f}/10")
-                st.caption(get_star_display(int(round(avg_rating))))
-            
-            # Combined score distribution
-            if len(assigned_df) > 0:
-                st.markdown("**Combined Score Distribution:**")
-                avg_combined_score = assigned_df['Score_Numeric'].mean()
-                max_combined_score = assigned_df['Score_Numeric'].max()
-                min_combined_score = assigned_df['Score_Numeric'].min()
-                
-                score_col1, score_col2, score_col3 = st.columns(3)
-                with score_col1:
-                    st.metric("Average Combined Score", f"{avg_combined_score:.0f}")
-                with score_col2:
-                    st.metric("Maximum Score", f"{max_combined_score:.0f}")
-                with score_col3:
-                    st.metric("Minimum Score", f"{min_combined_score:.0f}")
             
             # Tutor workload summary
             st.subheader("👥 Tutor Workload Summary")
