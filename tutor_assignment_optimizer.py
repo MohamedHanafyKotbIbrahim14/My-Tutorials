@@ -564,13 +564,6 @@ def show_upload_step():
     
     with col1:
         st.subheader("📄 File 1: Classes (T3)")
-        st.markdown("""
-        **Upload your class schedule Excel file.**
-        
-        The system will automatically extract TUT/LAB classes and classify courses:
-        - Courses with numbers < 5000 (e.g., ACTL2102) → UG (Undergraduate)
-        - Courses with numbers ≥ 5000 (e.g., ACTL5106) → PG (Postgraduate)
-        """)
         
         file1 = st.file_uploader(
             "Upload File 1 (Classes)",
@@ -580,18 +573,6 @@ def show_upload_step():
     
     with col2:
         st.subheader("👥 File 2: Tutor Preferences")
-        st.markdown("""
-        **Upload your tutor information Excel file.**
-        
-        The system will extract:
-        - Tutor names and degree information
-        - Course preferences for T3
-        - Maximum workload capacity
-        
-        **Degree Rules:**
-        - 🎓 PhD → Can teach both PG and UG courses
-        - 📚 Non-PhD → Can only teach UG courses
-        """)
         
         file2 = st.file_uploader(
             "Upload File 2 (Tutor Preferences)",
@@ -660,18 +641,6 @@ def show_course_level_step():
     st.header("Step 2: Set Course Levels (PG/UG)")
     
     classes_df = st.session_state.classes_df
-    
-    st.markdown("""
-    **Course levels have been automatically classified based on course numbers:**
-    - Courses with numbers **< 5000** (e.g., ACTL2102) → **UG (Undergraduate)**
-    - Courses with numbers **≥ 5000** (e.g., ACTL5106) → **PG (Postgraduate)**
-    
-    You can review and modify the classifications below if needed.
-    
-    **Important:**
-    - 🎓 PhD tutors can teach **both PG and UG** courses
-    - 📚 Non-PhD tutors can **only teach UG** courses
-    """)
     
     st.markdown("---")
     
@@ -970,9 +939,8 @@ def show_academic_preferences_step():
     
     st.markdown("---")
     
-    # Initialize academic preferences if not exists
+    # Initialize academic preferences - SET ALL TO 5 for ALL tutors and ALL their courses
     if 'academic_preferences' not in st.session_state:
-        # Default all to 5 (neutral)
         st.session_state.academic_preferences = {}
         for tutor in tutors_df['tutor_name'].unique():
             for course in preferences.get(tutor, []):
@@ -1758,7 +1726,7 @@ def show_optimization_step():
             workload_df = workload_df.sort_values('Total Classes', ascending=False)
             st.dataframe(workload_df, use_container_width=True, hide_index=True)
             
-            # Degree Priority Analysis
+            # Degree Priority Analysis - WITH EXPANDABLE LISTS FOR UNASSIGNED
             st.subheader("🎓 Degree Priority Analysis")
             
             col1, col2, col3 = st.columns(3)
@@ -1775,6 +1743,13 @@ def show_optimization_step():
                 
                 phd_classes = phd_tutors['Total Classes'].sum()
                 st.metric("Classes by PhD", phd_classes)
+                
+                # Show unassigned PhD tutors if any
+                phd_unassigned = phd_tutors[phd_tutors['Total Classes'] == 0]
+                if len(phd_unassigned) > 0:
+                    with st.expander(f"📋 View {len(phd_unassigned)} Unassigned PhD Tutor(s)"):
+                        for idx, tutor_row in phd_unassigned.iterrows():
+                            st.write(f"- {tutor_row['Tutor']}")
             
             # Master Analysis
             with col2:
@@ -1788,6 +1763,13 @@ def show_optimization_step():
                 
                 master_classes = master_tutors['Total Classes'].sum()
                 st.metric("Classes by Master", master_classes)
+                
+                # Show unassigned Master tutors if any
+                master_unassigned = master_tutors[master_tutors['Total Classes'] == 0]
+                if len(master_unassigned) > 0:
+                    with st.expander(f"📋 View {len(master_unassigned)} Unassigned Master Tutor(s)"):
+                        for idx, tutor_row in master_unassigned.iterrows():
+                            st.write(f"- {tutor_row['Tutor']}")
             
             # Bachelor Analysis
             with col3:
@@ -1801,6 +1783,13 @@ def show_optimization_step():
                 
                 bachelor_classes = bachelor_tutors['Total Classes'].sum()
                 st.metric("Classes by Bachelor", bachelor_classes)
+                
+                # Show unassigned Bachelor tutors if any
+                bachelor_unassigned = bachelor_tutors[bachelor_tutors['Total Classes'] == 0]
+                if len(bachelor_unassigned) > 0:
+                    with st.expander(f"📋 View {len(bachelor_unassigned)} Unassigned Bachelor Tutor(s)"):
+                        for idx, tutor_row in bachelor_unassigned.iterrows():
+                            st.write(f"- {tutor_row['Tutor']}")
             
             # Course diversity
             st.subheader("📊 Course Diversity Analysis")
