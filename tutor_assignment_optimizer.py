@@ -565,13 +565,7 @@ def show_upload_step():
     with col1:
         st.subheader("📄 File 1: Classes (T3)")
         st.markdown("""
-        **Upload your class schedule Excel file.**
-        
-        The system will automatically extract TUT/LAB classes and classify courses:
-        - Courses with numbers < 5000 (e.g., ACTL2102) → UG (Undergraduate)
-        - Courses with numbers ≥ 5000 (e.g., ACTL5106) → PG (Postgraduate)
-        """)
-        
+
         file1 = st.file_uploader(
             "Upload File 1 (Classes)",
             type=['xlsx', 'xls'],
