@@ -10,15 +10,15 @@ from datetime import time as dt_time
 import time as time_module
 
 class TutorAssignmentLP:
-    """Tutor-Class Assignment using Linear Programming with time conflict detection and degree requirements."""
+    """Tutor-Class Assignment using Linear Programming with dual preferences, time conflicts, and degree requirements."""
     
     def __init__(self, classes_df: pd.DataFrame, tutors_df: pd.DataFrame, 
                  preferences: Dict[Tuple[str, str], float],
                  tutor_max_classes: Dict[str, int],
                  tutor_degrees: Dict[str, str],
                  course_diversity_penalty: float = 5.0,
-                 phd_priority_bonus: float = 2.0,
-                 master_priority_bonus: float = 1.0):
+                 phd_priority_bonus: float = 10.0,
+                 master_priority_bonus: float = 5.0):
         """
         Initialize the LP problem.
         """
@@ -145,7 +145,7 @@ class TutorAssignmentLP:
             var_name = f"y_{len(self.y_vars)}"
             self.y_vars[(tutor, course)] = pulp.LpVariable(var_name, cat='Binary')
         
-        # Objective function - now uses the preference values which include academic ratings
+        # Objective function - now uses the preference values which include both tutor and academic ratings
         preference_term = pulp.lpSum([
             self.preferences.get((tutor, course), 0) * self.x_vars[(tutor, course, class_id)]
             for (tutor, course, class_id) in self.x_vars.keys()
@@ -523,7 +523,7 @@ def main():
     )
     
     st.title("👨‍🏫 Tutor-Class Assignment Optimizer (T3)")
-    st.markdown("**Linear Programming Solution with Time Conflict Detection & Degree Requirements**")
+    st.markdown("**Linear Programming with Dual Preferences, Time Conflicts & Degree Requirements**")
     st.markdown("---")
     
     if 'step' not in st.session_state:
@@ -916,8 +916,8 @@ def show_review_tutors_step():
 
 
 def show_academic_preferences_step():
-    """Step 4: Set academic preferences for tutors (NEW STEP)."""
-    st.header("Step 4: Academic Preferences for Tutors")
+    """Step 4: Set academic preferences for tutors."""
+    st.header("Step 4: Academic/Coordinator Preferences for Tutors")
     
     classes_df = st.session_state.classes_df
     tutors_df = st.session_state.tutors_df
@@ -932,7 +932,7 @@ def show_academic_preferences_step():
     - ✨ **8-9 - Prefer**: Good choice, strong preference
     - ⭐ **5-7 - Neutral/Acceptable**: Okay, will work
     - ⚠️ **3-4 - Less Preferred**: Concerns, use if needed
-    - ❌ **1-2 - Avoid**: Significant concerns, last resort
+    - ❌ **1-2 - Avoid**: Significant concerns, last resort (can be blocked with veto)
     
     **All tutors start at 5 (Neutral) by default.**
     """)
@@ -1353,19 +1353,100 @@ def show_optimization_step():
     with st.form("optimization_form"):
         st.subheader("⚙️ Optimization Parameters")
         
-        col1, col2, col3, col4 = st.columns(4)
+        st.markdown("""
+        **Dual Preference System:**
+        - **Tutor Preference (w₁)**: Weight for tutor's interest in teaching the course
+        - **Academic Preference (w₂)**: Weight for coordinator's rating of tutor-course match
+        - **Combined Score** = (w₁ × tutor preference) + (w₂ × academic rating) + degree bonuses
+        """)
+        
+        st.markdown("---")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
         
         with col1:
+            tutor_preference_weight = st.slider(
+                "Tutor Preference Weight (w₁)",
+                min_value=0.0,
+                max_value=30.0,
+                value=10.0,
+                step=1.0,
+                help="Weight for tutor's interest in teaching (binary yes/no = 10 points if yes)"
+            )
+            
+            st.info(f"""
+            **Current: {tutor_preference_weight}**
+            
+            - **0**: Ignore tutors
+            - **10**: Standard
+            - **20**: High value
+            """)
+        
+        with col2:
+            academic_preference_weight = st.slider(
+                "Academic Preference Weight (w₂)",
+                min_value=0.0,
+                max_value=30.0,
+                value=20.0,
+                step=1.0,
+                help="Weight for academic/coordinator ratings (1-10 scale)"
+            )
+            
+            st.success(f"""
+            **Current: {academic_preference_weight}**
+            
+            - **0**: Ignore academic
+            - **10**: Equal to tutor
+            - **20**: 2× tutor (recommended)
+            """)
+        
+        with col3:
+            phd_priority_bonus = st.slider(
+                "PhD Priority Bonus (β)",
+                min_value=0.0,
+                max_value=20.0,
+                value=10.0,
+                step=1.0,
+                help="Bonus points for assigning PhD students"
+            )
+            
+            st.success(f"""
+            **Current: {phd_priority_bonus}**
+            
+            - **0**: No priority
+            - **10**: Strong (recommended)
+            - **20**: Very strong
+            """)
+        
+        with col4:
+            master_priority_bonus = st.slider(
+                "Master Priority Bonus (γ)",
+                min_value=0.0,
+                max_value=15.0,
+                value=5.0,
+                step=1.0,
+                help="Bonus points for Master students (should be < PhD bonus)"
+            )
+            
+            st.info(f"""
+            **Current: {master_priority_bonus}**
+            
+            - **0**: No priority
+            - **5**: Moderate (recommended)
+            - **10**: Strong
+            """)
+        
+        with col5:
             course_diversity_penalty = st.slider(
-                "Course Diversity Penalty",
+                "Diversity Penalty (α)",
                 min_value=0.0,
                 max_value=20.0,
                 value=5.0,
                 step=0.5,
-                help="Higher penalty encourages tutors to teach fewer different courses (1-2 courses preferred)"
+                help="Penalty for teaching multiple different courses"
             )
             
-            st.info(f"""
+            st.warning(f"""
             **Current: {course_diversity_penalty}**
             
             - **0**: No penalty
@@ -1373,59 +1454,59 @@ def show_optimization_step():
             - **10+**: Strong
             """)
         
+        st.markdown("---")
+        
+        # Academic veto threshold
+        st.subheader("🚫 Academic Veto Threshold")
+        
+        col1, col2 = st.columns([2, 3])
+        
+        with col1:
+            veto_threshold = st.slider(
+                "Veto Threshold (θ)",
+                min_value=0,
+                max_value=4,
+                value=2,
+                step=1,
+                help="Block tutors with academic rating ≤ threshold (0 = disabled)"
+            )
+        
         with col2:
-            phd_priority_bonus = st.slider(
-                "PhD Priority Bonus",
-                min_value=0.0,
-                max_value=10.0,
-                value=10.0,
-                step=0.5,
-                help="Higher bonus gives more priority to assigning PhD students"
-            )
-            
-            st.success(f"""
-            **Current: {phd_priority_bonus}**
-            
-            - **0**: No priority
-            - **2**: Moderate
-            - **5+**: Strong
-            """)
+            if veto_threshold == 0:
+                st.info("✅ **Veto disabled** - All tutors are eligible regardless of rating")
+            elif veto_threshold == 1:
+                st.warning(f"⚠️ **Blocking tutors rated 1** - Only tutors with severe concerns are blocked")
+            elif veto_threshold == 2:
+                st.warning(f"⚠️ **Blocking tutors rated 1-2** - Tutors with significant concerns are blocked (recommended)")
+            elif veto_threshold == 3:
+                st.error(f"❌ **Blocking tutors rated 1-3** - Moderately restrictive")
+            else:
+                st.error(f"❌ **Blocking tutors rated 1-4** - Very restrictive, only accepts neutral+ ratings")
         
-        with col3:
-            master_priority_bonus = st.slider(
-                "Master Priority Bonus",
-                min_value=0.0,
-                max_value=5.0,
-                value=5.0,
-                step=0.5,
-                help="Higher bonus gives more priority to Master students (should be less than PhD bonus)"
-            )
-            
-            st.info(f"""
-            **Current: {master_priority_bonus}**
-            
-            - **0**: No priority
-            - **1**: Moderate
-            - **2+**: Strong
-            """)
+        st.markdown("---")
         
-        with col4:
-            academic_weight = st.slider(
-                "Academic Preference Weight",
-                min_value=1.0,
-                max_value=20.0,
-                value=20.0,
-                step=1.0,
-                help="Multiplier for academic ratings (higher = more influence)"
-            )
-            
-            st.warning(f"""
-            **Current: {academic_weight}**
-            
-            - **1-5**: Low influence
-            - **10**: Balanced
-            - **15+**: High influence
-            """)
+        # Example scoring
+        st.subheader("📊 Example Scoring with Current Weights")
+        
+        example_col1, example_col2, example_col3 = st.columns(3)
+        
+        with example_col1:
+            st.markdown("**Best Case (PhD, perfect match):**")
+            best_score = (tutor_preference_weight * 10) + (academic_preference_weight * 10) + phd_priority_bonus
+            st.metric("Total Score", f"{best_score:.0f} points")
+            st.caption("Tutor: Yes (10) + Academic: 10 + PhD bonus")
+        
+        with example_col2:
+            st.markdown("**Good Case (Master, strong match):**")
+            good_score = (tutor_preference_weight * 10) + (academic_preference_weight * 8) + master_priority_bonus
+            st.metric("Total Score", f"{good_score:.0f} points")
+            st.caption("Tutor: Yes (10) + Academic: 8 + Master bonus")
+        
+        with example_col3:
+            st.markdown("**Acceptable Case (Bachelor, neutral):**")
+            acceptable_score = (tutor_preference_weight * 10) + (academic_preference_weight * 5) + 0
+            st.metric("Total Score", f"{acceptable_score:.0f} points")
+            st.caption("Tutor: Yes (10) + Academic: 5 + No bonus")
         
         # Submit button
         run_optimization = st.form_submit_button("🚀 Run Optimization", type="primary")
@@ -1440,14 +1521,28 @@ def show_optimization_step():
             
             st.markdown("---")
             
-            # Build preference dictionary with academic ratings
+            # Build preference dictionary with dual preferences and veto
             pref_dict = {}
+            vetoed_count = 0
+            
             for tutor, courses in preferences.items():
                 for course in courses:
                     # Get academic rating (default 5 if not set)
                     academic_rating = academic_preferences.get((course, tutor), 5)
-                    # Final score = academic_weight * academic_rating
-                    pref_dict[(tutor, course)] = academic_weight * academic_rating
+                    
+                    # Check veto threshold
+                    if academic_rating <= veto_threshold:
+                        vetoed_count += 1
+                        continue  # Skip this tutor-course pair (vetoed)
+                    
+                    # Tutor preference: 10 if they expressed interest (binary)
+                    tutor_pref = 10
+                    
+                    # Combined score: (w1 × p_tc) + (w2 × a_tc)
+                    pref_dict[(tutor, course)] = (tutor_preference_weight * tutor_pref) + (academic_preference_weight * academic_rating)
+            
+            if vetoed_count > 0:
+                st.warning(f"🚫 Academic veto applied: {vetoed_count} tutor-course pair(s) blocked (rating ≤ {veto_threshold})")
             
             # Progress tracking
             progress_bar = st.progress(0)
@@ -1484,8 +1579,17 @@ def show_optimization_step():
                 progress_bar.progress(100)
                 status_text.text(f"✅ Optimization completed in {solution.get('solve_time', 0):.1f} seconds")
                 
-                # Store results in session state
+                # Store results and parameters in session state
                 st.session_state.optimization_results = solution
+                st.session_state.optimization_params = {
+                    'tutor_weight': tutor_preference_weight,
+                    'academic_weight': academic_preference_weight,
+                    'phd_bonus': phd_priority_bonus,
+                    'master_bonus': master_priority_bonus,
+                    'diversity_penalty': course_diversity_penalty,
+                    'veto_threshold': veto_threshold,
+                    'vetoed_count': vetoed_count
+                }
                 
             except Exception as e:
                 progress_bar.progress(100)
@@ -1496,9 +1600,14 @@ def show_optimization_step():
         
         # Display results from session state
         solution = st.session_state.optimization_results
+        params = st.session_state.get('optimization_params', {})
         
         st.markdown("---")
-        col1, col2, col3, col4 = st.columns(4)
+        
+        # Results summary
+        st.subheader("📈 Optimization Summary")
+        
+        col1, col2, col3, col4, col5 = st.columns(5)
         with col1:
             st.metric("Status", solution['status'])
         with col2:
@@ -1510,12 +1619,33 @@ def show_optimization_step():
         with col4:
             unassigned_count = len(solution['unassigned_classes'])
             st.metric("Unassigned Classes", unassigned_count)
+        with col5:
+            if params.get('vetoed_count', 0) > 0:
+                st.metric("Vetoed Assignments", params['vetoed_count'])
+                st.caption("🚫 Blocked by threshold")
         
         if solution['status'] in ['Optimal', 'Not Solved']:
             if unassigned_count == 0:
                 st.success("✅ All classes assigned!")
             else:
                 st.warning(f"⚠️ {unassigned_count} classes could not be assigned (see details below).")
+            
+            # Parameter summary
+            with st.expander("⚙️ View Optimization Parameters Used"):
+                param_col1, param_col2 = st.columns(2)
+                with param_col1:
+                    st.markdown("**Preference Weights:**")
+                    st.write(f"- Tutor Preference Weight (w₁): {params.get('tutor_weight', 10)}")
+                    st.write(f"- Academic Preference Weight (w₂): {params.get('academic_weight', 20)}")
+                    st.markdown("**Degree Priority Bonuses:**")
+                    st.write(f"- PhD Priority Bonus (β): {params.get('phd_bonus', 10)}")
+                    st.write(f"- Master Priority Bonus (γ): {params.get('master_bonus', 5)}")
+                with param_col2:
+                    st.markdown("**Other Parameters:**")
+                    st.write(f"- Course Diversity Penalty (α): {params.get('diversity_penalty', 5)}")
+                    st.write(f"- Academic Veto Threshold (θ): {params.get('veto_threshold', 2)}")
+                    if params.get('vetoed_count', 0) > 0:
+                        st.write(f"- Assignments Vetoed: {params['vetoed_count']}")
             
             # Create results dataframe
             results_data = []
@@ -1526,12 +1656,16 @@ def show_optimization_step():
                 
                 tutor_degree = degrees.get(assigned_tutor, 'N/A') if assigned_tutor != 'UNASSIGNED' else 'N/A'
                 
-                # Get academic rating for this assignment
+                # Get academic rating and tutor preference for this assignment
                 if assigned_tutor != 'UNASSIGNED':
                     academic_rating = academic_preferences.get((course, assigned_tutor), 5)
+                    tutor_pref = 10  # Binary: has preference
                     rating_display = f"{academic_rating} {get_star_display(academic_rating)}"
+                    combined_score = (params.get('tutor_weight', 10) * tutor_pref) + (params.get('academic_weight', 20) * academic_rating)
+                    score_display = f"{combined_score:.0f}"
                 else:
                     rating_display = 'N/A'
+                    score_display = 'N/A'
                 
                 results_data.append({
                     'Course': course,
@@ -1542,7 +1676,8 @@ def show_optimization_step():
                     'Time': row['time'],
                     'Assigned Tutor': assigned_tutor,
                     'Tutor Degree': tutor_degree,
-                    'Academic Rating': rating_display
+                    'Academic Rating': rating_display,
+                    'Combined Score': score_display
                 })
             
             results_df = pd.DataFrame(results_data)
@@ -1581,8 +1716,8 @@ def show_optimization_step():
             
             st.dataframe(display_df, use_container_width=True, hide_index=True)
             
-            # Academic Rating Satisfaction Analysis
-            st.subheader("🎓 Academic Rating Satisfaction")
+            # Academic Rating & Combined Score Satisfaction Analysis
+            st.subheader("🎓 Preference Satisfaction Analysis")
             
             assigned_df = results_df[results_df['Assigned Tutor'] != 'UNASSIGNED'].copy()
             
@@ -1591,27 +1726,46 @@ def show_optimization_step():
                 lambda x: int(x.split()[0]) if x != 'N/A' else 0
             )
             
+            assigned_df['Score_Numeric'] = assigned_df['Combined Score'].apply(
+                lambda x: float(x) if x != 'N/A' else 0
+            )
+            
             col1, col2, col3, col4 = st.columns(4)
             
             with col1:
                 high_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] >= 8])
-                st.metric("High Satisfaction (8-10)", high_satisfaction)
+                st.metric("High Academic Rating (8-10)", high_satisfaction)
                 st.caption(f"{high_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
             
             with col2:
                 medium_satisfaction = len(assigned_df[(assigned_df['Rating_Numeric'] >= 5) & (assigned_df['Rating_Numeric'] < 8)])
-                st.metric("Medium Satisfaction (5-7)", medium_satisfaction)
+                st.metric("Medium Academic Rating (5-7)", medium_satisfaction)
                 st.caption(f"{medium_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
             
             with col3:
                 low_satisfaction = len(assigned_df[assigned_df['Rating_Numeric'] < 5])
-                st.metric("Low Satisfaction (1-4)", low_satisfaction)
+                st.metric("Low Academic Rating (1-4)", low_satisfaction)
                 st.caption(f"{low_satisfaction/len(assigned_df)*100:.1f}% of assignments" if len(assigned_df) > 0 else "N/A")
             
             with col4:
                 avg_rating = assigned_df['Rating_Numeric'].mean() if len(assigned_df) > 0 else 0
-                st.metric("Average Rating", f"{avg_rating:.1f}/10")
+                st.metric("Avg Academic Rating", f"{avg_rating:.1f}/10")
                 st.caption(get_star_display(int(round(avg_rating))))
+            
+            # Combined score distribution
+            if len(assigned_df) > 0:
+                st.markdown("**Combined Score Distribution:**")
+                avg_combined_score = assigned_df['Score_Numeric'].mean()
+                max_combined_score = assigned_df['Score_Numeric'].max()
+                min_combined_score = assigned_df['Score_Numeric'].min()
+                
+                score_col1, score_col2, score_col3 = st.columns(3)
+                with score_col1:
+                    st.metric("Average Combined Score", f"{avg_combined_score:.0f}")
+                with score_col2:
+                    st.metric("Maximum Score", f"{max_combined_score:.0f}")
+                with score_col3:
+                    st.metric("Minimum Score", f"{min_combined_score:.0f}")
             
             # Tutor workload summary
             st.subheader("👥 Tutor Workload Summary")
@@ -1625,6 +1779,7 @@ def show_optimization_step():
                 pg_count = 0
                 ug_count = 0
                 ratings_for_tutor = []
+                scores_for_tutor = []
                 
                 for course, class_id in assigned_classes:
                     courses_count[course] = courses_count.get(course, 0) + 1
@@ -1637,9 +1792,12 @@ def show_optimization_step():
                     else:
                         ug_count += 1
                     
-                    # Get academic rating
+                    # Get academic rating and combined score
                     rating = academic_preferences.get((course, tutor), 5)
                     ratings_for_tutor.append(rating)
+                    
+                    combined = (params.get('tutor_weight', 10) * 10) + (params.get('academic_weight', 20) * rating)
+                    scores_for_tutor.append(combined)
                 
                 courses_str = ', '.join([f"{course}({count})" for course, count in courses_count.items()])
                 num_different_courses = solution['tutor_course_diversity'].get(tutor, 0)
@@ -1647,6 +1805,7 @@ def show_optimization_step():
                 tutor_degree = degrees.get(tutor, 'Not Specified')
                 
                 avg_rating = sum(ratings_for_tutor) / len(ratings_for_tutor) if ratings_for_tutor else 0
+                avg_score = sum(scores_for_tutor) / len(scores_for_tutor) if scores_for_tutor else 0
                 
                 workload_data.append({
                     'Tutor': tutor,
@@ -1658,6 +1817,7 @@ def show_optimization_step():
                     'Max Allowed': max_classes.get(tutor, 0),
                     'Utilization': f"{load['total']}/{max_classes.get(tutor, 0)}",
                     'Avg Academic Rating': f"{avg_rating:.1f}" if avg_rating > 0 else "N/A",
+                    'Avg Combined Score': f"{avg_score:.0f}" if avg_score > 0 else "N/A",
                     'Courses Assigned': courses_str if courses_str else 'None'
                 })
             
@@ -1766,11 +1926,23 @@ def show_optimization_step():
                     else:
                         qualified_tutors = [t for t, courses_pref in preferences.items() if course in courses_pref]
                     
+                    # Check if any were vetoed
+                    vetoed_for_course = []
+                    for tutor in tutors_df['tutor_name'].unique():
+                        if course in preferences.get(tutor, []):
+                            if degrees.get(tutor, '') != 'PhD' and course_level == 'PG':
+                                continue
+                            rating = academic_preferences.get((course, tutor), 5)
+                            if rating <= params.get('veto_threshold', 2):
+                                vetoed_for_course.append(tutor)
+                    
                     if len(qualified_tutors) == 0:
                         if course_level == 'PG':
                             reason = "No PhD tutors with preference for this course"
                         else:
                             reason = "No tutors with preference for this course"
+                    elif len(vetoed_for_course) > 0:
+                        reason = f"Academic veto blocked {len(vetoed_for_course)} tutor(s)"
                     else:
                         reason = "Time conflict or capacity exceeded"
                     
@@ -1781,6 +1953,7 @@ def show_optimization_step():
                         'Section': class_row['section'],
                         'Time': class_row['time'],
                         'Qualified Tutors': len(qualified_tutors),
+                        'Vetoed Tutors': len(vetoed_for_course),
                         'Possible Reason': reason
                     })
                 
@@ -1815,11 +1988,43 @@ def show_optimization_step():
                     })
                 academic_prefs_df = pd.DataFrame(academic_prefs_export)
                 academic_prefs_df.to_excel(writer, sheet_name='Academic Preferences', index=False)
+                
+                # Add optimization parameters sheet
+                params_export = pd.DataFrame([{
+                    'Parameter': 'Tutor Preference Weight (w1)',
+                    'Value': params.get('tutor_weight', 10),
+                    'Description': 'Weight for tutor interest (binary yes/no)'
+                }, {
+                    'Parameter': 'Academic Preference Weight (w2)',
+                    'Value': params.get('academic_weight', 20),
+                    'Description': 'Weight for academic ratings (1-10 scale)'
+                }, {
+                    'Parameter': 'PhD Priority Bonus (β)',
+                    'Value': params.get('phd_bonus', 10),
+                    'Description': 'Bonus points for PhD students'
+                }, {
+                    'Parameter': 'Master Priority Bonus (γ)',
+                    'Value': params.get('master_bonus', 5),
+                    'Description': 'Bonus points for Master students'
+                }, {
+                    'Parameter': 'Course Diversity Penalty (α)',
+                    'Value': params.get('diversity_penalty', 5),
+                    'Description': 'Penalty for teaching multiple courses'
+                }, {
+                    'Parameter': 'Academic Veto Threshold (θ)',
+                    'Value': params.get('veto_threshold', 2),
+                    'Description': 'Block tutors with rating ≤ threshold'
+                }, {
+                    'Parameter': 'Vetoed Assignments',
+                    'Value': params.get('vetoed_count', 0),
+                    'Description': 'Number of tutor-course pairs blocked'
+                }])
+                params_export.to_excel(writer, sheet_name='Optimization Parameters', index=False)
             
             st.download_button(
-                label="📥 Download Results (Excel)",
+                label="📥 Download Complete Results (Excel)",
                 data=output.getvalue(),
-                file_name="tutor_assignments_T3_optimized_with_preferences.xlsx",
+                file_name="tutor_assignments_T3_dual_preferences.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
             )
         
@@ -1834,6 +2039,8 @@ def show_optimization_step():
             # Clear optimization results when going back
             if 'optimization_results' in st.session_state:
                 del st.session_state.optimization_results
+            if 'optimization_params' in st.session_state:
+                del st.session_state.optimization_params
             st.session_state.step = 5
             st.rerun()
     
