@@ -1348,7 +1348,7 @@ def show_optimization_step():
         
         with col1:
             w1 = st.slider(
-                "w₁: Tutor Preference Weight",
+                "Tutor Preference Weight",
                 min_value=0.0,
                 max_value=50.0,
                 value=10.0,
@@ -1365,7 +1365,7 @@ def show_optimization_step():
         
         with col2:
             w2 = st.slider(
-                "w₂: Academic Preference Weight",
+                "Academic Preference Weight",
                 min_value=0.0,
                 max_value=50.0,
                 value=20.0,
@@ -1385,7 +1385,7 @@ def show_optimization_step():
         st.markdown("### Academic Veto Threshold")
         
         theta = st.slider(
-            "θ (Theta): Academic Veto Threshold",
+            "Academic Veto Threshold",
             min_value=0.0,
             max_value=4.0,
             value=2.0,
@@ -1409,10 +1409,10 @@ def show_optimization_step():
         
         with col1:
             course_diversity_penalty = st.slider(
-                "α: Course Diversity Penalty",
+                "Course Diversity Penalty",
                 min_value=0.0,
                 max_value=20.0,
-                value=5.0,
+                value=20.0,
                 step=0.5,
                 help="Higher penalty encourages tutors to teach fewer different courses"
             )
@@ -1427,10 +1427,10 @@ def show_optimization_step():
         
         with col2:
             phd_priority_bonus = st.slider(
-                "β: PhD Priority Bonus",
+                "PhD Priority Bonus",
                 min_value=0.0,
                 max_value=20.0,
-                value=10.0,
+                value=20.0,
                 step=0.5,
                 help="Higher bonus gives more priority to PhD students"
             )
@@ -1445,10 +1445,10 @@ def show_optimization_step():
         
         with col3:
             master_priority_bonus = st.slider(
-                "γ: Master Priority Bonus",
+                "Master Priority Bonus",
                 min_value=0.0,
                 max_value=15.0,
-                value=5.0,
+                value=15.0,
                 step=0.5,
                 help="Higher bonus gives more priority to Master students (should be < β)"
             )
