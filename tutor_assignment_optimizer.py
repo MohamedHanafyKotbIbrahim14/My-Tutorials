@@ -1398,7 +1398,6 @@ def show_optimization_step():
         
         - Tutors with a_tc ≤ {theta} will be **blocked** from teaching that course
         - Set to 0 to disable academic veto
-        - Typical range: 1-3
         """)
         
         st.markdown("---")
@@ -1421,7 +1420,7 @@ def show_optimization_step():
             **Current: {course_diversity_penalty}**
             
             - **0**: No penalty
-            - **5**: Moderate (recommended)
+            - **5**: Moderate
             - **10+**: Strong penalty
             """)
         
@@ -1439,7 +1438,7 @@ def show_optimization_step():
             **Current: {phd_priority_bonus}**
             
             - **0**: No priority
-            - **10**: Strong (recommended)
+            - **10**: Strong 
             - Must be > γ
             """)
         
@@ -1457,7 +1456,7 @@ def show_optimization_step():
             **Current: {master_priority_bonus}**
             
             - **0**: No priority
-            - **5**: Medium (recommended)
+            - **5**: Medium 
             - Must be < β
             """)
         
